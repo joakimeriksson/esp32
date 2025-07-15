@@ -1,0 +1,21 @@
+#ifndef PROJECT_CONF_H_
+#define PROJECT_CONF_H_
+
+
+
+/* project-conf.h */
+#define COAP_CONF_WITH_MBEDTLS   0
+#define CSPRNG_CONF_ENABLED      0
+#define NETSTACK_CONF_WITH_IPV6  1
+#define NETSTACK_CONF_WITH_UDP   1
+
+
+#define WEBSERVER_CONF_INBUF_SIZE   1500
+
+#undef LOG_CONF_LEVEL_RPL
+#undef LOG_CONF_LEVEL_IPV6
+#undef LOG_CONF_LEVEL_MAC
+#undef LOG_CONF_LEVEL_SYS
+
+#endif /* PROJECT_CONF_H_ */
+
