@@ -8,27 +8,45 @@
 #define TAG          "EDSCAN"
 
 static QueueHandle_t s_result_q; // holds {uint8_t ch, int8_t pwr}
+static scan_mode_t s_scan_mode = SCAN_MODE_SWEEP;
+uint8_t s_single_channel = CH_FIRST;
 
 QueueHandle_t ieee_scan_get_queue(void) { return s_result_q; }
+
+void ieee_scan_set_mode(scan_mode_t mode, uint8_t channel) {
+    s_scan_mode = mode;
+    if (s_scan_mode == SCAN_MODE_SINGLE_CHANNEL) {
+        s_single_channel = channel;
+    }
+}
 
 /* --- ISR callback from driver (weak symbol) ------------------------------ */
 void IRAM_ATTR esp_ieee802154_energy_detect_done(int8_t power_dbm)
 {
     static uint8_t cur_ch = CH_FIRST;
-    ed_point_t pt = { .ch = cur_ch, .pwr = power_dbm };
+    ed_point_t pt;
     BaseType_t woke = pdFALSE;
-    xQueueSendFromISR(s_result_q, &pt, &woke);
 
-    /* go to next channel or finish */
-    if (++cur_ch <= CH_LAST) {
-        ESP_ERROR_CHECK(esp_ieee802154_set_channel(cur_ch));
+    if (s_scan_mode == SCAN_MODE_SWEEP) {
+        pt.ch = cur_ch;
+        pt.pwr = power_dbm;
+        xQueueSendFromISR(s_result_q, &pt, &woke);
+
+        if (++cur_ch <= CH_LAST) {
+            ESP_ERROR_CHECK(esp_ieee802154_set_channel(cur_ch));
+            esp_ieee802154_energy_detect(ED_WIN_SYM);
+        } else {
+            cur_ch = CH_FIRST;
+        }
+    } else { // SCAN_MODE_SINGLE_CHANNEL
+        pt.ch = s_single_channel;
+        pt.pwr = power_dbm;
+        xQueueSendFromISR(s_result_q, &pt, &woke);
         esp_ieee802154_energy_detect(ED_WIN_SYM);
-    } else {
-        cur_ch = CH_FIRST;
     }
-    /* context-switch if we unblocked something higher priority */
+
     if (woke == pdTRUE) {
-        portYIELD_FROM_ISR();    // <-- correct name, no argument
+        portYIELD_FROM_ISR();
     }
 }
 
@@ -37,11 +55,14 @@ static void ieee_sweep_task(void *arg)
 {
     esp_ieee802154_enable();                // power up radio
     for (;;) {
-        /* kick off a fresh sweep */
-        esp_ieee802154_set_channel(CH_FIRST);
+        if (s_scan_mode == SCAN_MODE_SWEEP) {
+            esp_ieee802154_set_channel(CH_FIRST);
+        } else {
+            esp_ieee802154_set_channel(s_single_channel);
+        }
         esp_ieee802154_energy_detect(ED_WIN_SYM);
 
-        vTaskDelay(pdMS_TO_TICKS(20));     // 4 sweeps / second ≈ 64 ms radio time
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
