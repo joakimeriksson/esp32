@@ -10,6 +10,7 @@ The application continuously scans IEEE 802.15.4 channels (11-26) for energy lev
 
 *   **IEEE 802.15.4 Energy Detection:** Scans channels 11-26 for received signal strength (RSSI).
 *   **Real-time Spectrum Display:** Visualizes energy levels per channel using LVGL on an LCD.
+*   **Single-Channel Scan Mode:** A button allows switching between all-channel scanning and a single-channel scan mode, which cycles through individual channels (11-26).
 *   **ESP-IDF Framework:** Built using the Espressif IoT Development Framework.
 
 ## Hardware Requirements
@@ -47,9 +48,21 @@ I have used the ESP32-c6-LCD1.47 from Waveshare.
     idf.py flash monitor
     ```
 
+## Screenshots
+
+Here are some screenshots of the application in action:
+
+![Screenshot 1](imgs/screen1.jpg)
+
+![Screenshot 2](imgs/screen2.jpg)
+
 ## How It Works
 
-The application operates with two primary FreeRTOS tasks:
+The application operates with two primary FreeRTOS tasks and responds to user input:
 
 1.  **`ieee_sweep_task`**: This task is responsible for continuously initiating IEEE 802.15.4 energy detection scans. It iterates through channels 11-26, triggering the radio to perform an energy detect operation on each. The results (channel and power level) are sent to a FreeRTOS queue.
 2.  **`ui_spectrum_task`**: This task initializes the LVGL display and continuously reads energy detection results from the queue. It then updates the LVGL canvas, drawing vertical lines whose height corresponds to the detected energy level for each channel, providing a real-time spectrum visualization.
+
+**User Interaction:** A physical button (connected to GPIO 9) allows the user to switch between scanning modes. Pressing the button cycles through:
+*   **All-Channel Scan Mode:** Displays energy levels for all channels (11-26) simultaneously.
+*   **Single-Channel Scan Mode:** Displays energy levels for one channel at a time, cycling from channel 11 to 26 with each subsequent button press. After channel 26, it returns to the all-channel scan mode.
