@@ -30,6 +30,15 @@
 #define CONTIKI_VERSION_STRING "Contiki-NG-ESP32C6"
 #define CONTIKI_TARGET_STRING "esp32c6"
 
+#ifdef CONTIKI_APP_NULLNET
+/* E6 stage 1: nullnet broadcast only, no IPv6, no RPL (see apps/nullnet-xlevel.c) */
+#define UIP_CONF_IPV6           0
+#define NETSTACK_CONF_WITH_IPV6 0
+#define RPL_CONF_ENABLED        0
+#define ROUTING_CONF_RPL_LITE   0
+#define ROUTING_CONF_NULLROUTING 1
+#define NETSTACK_CONF_NETWORK   nullnet_driver
+#else
 /* Enable IPv6 */
 #define UIP_CONF_IPV6 1
 
@@ -37,6 +46,7 @@
 #define RPL_CONF_ENABLED        1
 #define NETSTACK_CONF_WITH_IPV6 1
 #define ROUTING_CONF_RPL_LITE   1
+#endif
 #define NETSTACK_CONF_MAC       csma_driver
 #define NETSTACK_CONF_FRAMER    framer_802154
 #define NETSTACK_CONF_RADIO     esp32c6_radio_driver
