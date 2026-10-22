@@ -1,23 +1,23 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* One Synthex voice: a port of synthex-web's VoiceCore (packages/engine/src/dsp/voice-core.ts) to
- * fixed point. VoiceCore is the reference: tools/ref_render.mjs renders it, host/sx_render.c renders
- * this, and tests/run.sh compares the two. Keep the order of operations in sx_voice_render() the same
+/* One Scintilla voice: a port of synthex-web's VoiceCore (packages/engine/src/dsp/voice-core.ts) to
+ * fixed point. VoiceCore is the reference: tools/ref_render.mjs renders it, host/sc_render.c renders
+ * this, and tests/run.sh compares the two. Keep the order of operations in sc_voice_render() the same
  * as VoiceCore.render(); where they differ on purpose, the comment says so. */
-#ifndef SX_VOICE_H
-#define SX_VOICE_H
+#ifndef SC_VOICE_H
+#define SC_VOICE_H
 #include <stdint.h>
-#include "sx_patch.h"
+#include "sc_patch.h"
 
 /* The joystick performance section (panel controls, not patch memory), Q16. */
 typedef struct {
     int32_t joy_x, joy_y;                       /* -1..1 */
     int32_t bend_osc, bend_filt, lfo2_osc, lfo2_filt;   /* the four sliders, 0..1 */
-} sx_perf_t;
+} sc_perf_t;
 
 /* What the voices of one layer derive from its patch and the performance controls: computed in
- * the main loop when either changes (sx_prep), read by the audio interrupt. */
+ * the main loop when either changes (sc_prep), read by the audio interrupt. */
 typedef struct {
-    const sx_layer_t *L;
+    const sc_layer_t *L;
     uint32_t fa_inc, fd_inc, aa_inc, ad_inc;    /* envelope attack / decay steps, Q30 per sample */
     int32_t  fs, as;                            /* sustain levels, Q30 */
     uint32_t fr_q8, ar_q8;                      /* release times in samples, Q8 */
@@ -34,34 +34,34 @@ typedef struct {
     int32_t  mix1, mix2, mixn;
     int32_t  glide_coef;                        /* portamento step, Q30 */
     int32_t  gdc1, gdc2, gdc_panel;             /* per-oscillator and panel glide decay, Q30 */
-    uint32_t use;                               /* SX_USE_*: which per-sample paths this patch needs */
-} sx_prep_t;
+    uint32_t use;                               /* SC_USE_*: which per-sample paths this patch needs */
+} sc_prep_t;
 
-/* sx_prep_t.use: work the render loop skips when a patch does not route it. Skipping is exact: a
+/* sc_prep_t.use: work the render loop skips when a patch does not route it. Skipping is exact: a
  * term that is not computed is one that would have added zero. (A skipped LFO does not advance, so
  * if a route to it is switched on mid-note, its phase is not what VoiceCore's would be.) */
-#define SX_USE_L1     1u                        /* LFO1 reaches pitch, PWM, cutoff or amplitude */
-#define SX_USE_L2     2u
-#define SX_USE_P1MOD  4u                        /* OSC1's pitch moves per sample (LFOs) */
-#define SX_USE_P2MOD  8u                        /* OSC2's (LFOs, ENV1) */
-#define SX_USE_AMP    16u                       /* an LFO on amplitude */
-#define SX_USE_NOISE  32u                       /* the noise generator is heard (or OSC2 shares it) */
+#define SC_USE_L1     1u                        /* LFO1 reaches pitch, PWM, cutoff or amplitude */
+#define SC_USE_L2     2u
+#define SC_USE_P1MOD  4u                        /* OSC1's pitch moves per sample (LFOs) */
+#define SC_USE_P2MOD  8u                        /* OSC2's (LFOs, ENV1) */
+#define SC_USE_AMP    16u                       /* an LFO on amplitude */
+#define SC_USE_NOISE  32u                       /* the noise generator is heard (or OSC2 shares it) */
 
-void sx_prep(sx_prep_t *p, const sx_layer_t *L, const sx_perf_t *perf);
+void sc_prep(sc_prep_t *p, const sc_layer_t *L, const sc_perf_t *perf);
 
-typedef struct { int8_t stage; int32_t level; uint32_t rel_inc; } sx_env_t;
-typedef struct { uint32_t ph, rng; int32_t sh, sh_next, smooth, ramp; } sx_lfo_t;
-typedef struct { uint32_t ph; int32_t z; uint8_t wrapped; } sx_osc_t;
-typedef struct { int32_t ic1, ic2; } sx_svf_t;
-typedef struct { uint32_t w, counter; int32_t bands[16], sum; } sx_pink_t;
+typedef struct { int8_t stage; int32_t level; uint32_t rel_inc; } sc_env_t;
+typedef struct { uint32_t ph, rng; int32_t sh, sh_next, smooth, ramp; } sc_lfo_t;
+typedef struct { uint32_t ph; int32_t z; uint8_t wrapped; } sc_osc_t;
+typedef struct { int32_t ic1, ic2; } sc_svf_t;
+typedef struct { uint32_t w, counter; int32_t bands[16], sum; } sc_pink_t;
 
 typedef struct {
-    sx_osc_t o1, o2;
+    sc_osc_t o1, o2;
     uint32_t noise1, noise2;
-    sx_pink_t pink;
-    sx_env_t env1, env2;
-    sx_lfo_t lfo1, lfo2;
-    sx_svf_t f1, f2;
+    sc_pink_t pink;
+    sc_env_t env1, env2;
+    sc_lfo_t lfo1, lfo2;
+    sc_svf_t f1, f2;
     int64_t cur, target;                        /* pitch, Q32: a slow portamento's steps are far below Q16 */
     int32_t vel;                                /* 0..1, Q16 */
     int32_t bend;                               /* this voice's bend (pitch bend or unison detune), Q16 */
@@ -72,17 +72,17 @@ typedef struct {
     int32_t a1, a2, a3;                         /* SVF coefficients, Q30 */
     int32_t n1, n2;                             /* the pitches dt1 / dt2 were computed for */
     uint32_t dt1, dt2;
-} sx_voice_t;
+} sc_voice_t;
 
-#define SX_COEFF_BLOCK 128                      /* as VoiceCore's COEFF_BLOCK */
+#define SC_COEFF_BLOCK 128                      /* as VoiceCore's COEFF_BLOCK */
 
-void sx_voice_init(sx_voice_t *v, uint32_t seed);
-void sx_voice_note_on(sx_voice_t *v, const sx_prep_t *p, int32_t note, int32_t vel_q16);
-void sx_voice_note_off(sx_voice_t *v, const sx_prep_t *p);
-static inline int sx_voice_idle(const sx_voice_t *v) { return v->env2.stage == 0; }
+void sc_voice_init(sc_voice_t *v, uint32_t seed);
+void sc_voice_note_on(sc_voice_t *v, const sc_prep_t *p, int32_t note, int32_t vel_q16);
+void sc_voice_note_off(sc_voice_t *v, const sc_prep_t *p);
+static inline int sc_voice_idle(const sc_voice_t *v) { return v->env2.stage == 0; }
 /* add n samples of this voice (audio Q20, mono) into out */
-void sx_voice_render(sx_voice_t *v, const sx_prep_t *p, int32_t *out, uint32_t n);
+void sc_voice_render(sc_voice_t *v, const sc_prep_t *p, int32_t *out, uint32_t n);
 
-uint32_t sx_pitch_inc(int32_t note_q16);
+uint32_t sc_pitch_inc(int32_t note_q16);
 
 #endif
