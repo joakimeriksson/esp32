@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* The play screen, landscape 480 x 320, in synthex-web's colours: the program display at the top,
- * octave, sound, the BLE MIDI light and the way to the instrument page in the middle, an 18-key
+ * octave, sound, the BLE MIDI light and the way to the instrument page in the middle, the volume, an 18-key
  * keyboard (C to F, two and a half octaves) at the bottom. The keyboard is drawn as plain objects and
  * hit-tested here, black keys first; sliding across it retriggers. Every note goes to the audio task
- * through events_post, as BLE MIDI's do. */
+ * through events_post, as BLE MIDI's do. Tapping the program display opens the patch picker: the
+ * Synthex numbering, two banks (10-49, 110-149) of four groups of ten, chosen with lit buttons, and
+ * the group's ten patches by name. */
 #include <stdio.h>
 #include "lvgl.h"
 #include "audio_task.h"
@@ -16,17 +18,19 @@
 #define WHITE   18
 #define KW      25                      /* white key width */
 #define KX      15
-#define KY      118
-#define KH      198
+#define KY      158
+#define KH      158
 #define BW      15                      /* black key: 60 % of a white key's width ... */
-#define BH      118                     /* ... and 60 % of its height */
+#define BH      95                      /* ... and 60 % of its height */
 #define VEL     52000                   /* fixed velocity 100/127, Q16: touch has none */
 
 static const int8_t white_semi[7] = { 0, 2, 4, 5, 7, 9, 11 };
 static const int8_t has_black[7] = { 1, 1, 0, 1, 1, 1, 0 };     /* a black key after C D F G A */
 static lv_obj_t *play, *wkey[WHITE], *bkey[WHITE], *kb, *num_label, *name_label, *oct_label, *load_label;
-static lv_obj_t *sound_btn, *midi_btn;
+static lv_obj_t *sound_btn, *midi_btn, *vol_slider, *vol_label;
 static int preset, octave, held = -1, held_key = -1;
+static lv_obj_t *picker, *bank_btn[2], *group_btn[4], *pick_btn[10];
+static int pick_bank, pick_group;
 
 static int base_note(void) { return 48 + 12 * octave; }        /* the leftmost C: C3 at octave 0 */
 
@@ -112,6 +116,76 @@ static void sound_toggle(lv_event_t *e)
     theme_button_lit(sound_btn, audio_sound());
 }
 
+static void volume_moved(lv_event_t *e)
+{
+    audio_set_volume(lv_slider_get_value(vol_slider));
+    lv_label_set_text_fmt(vol_label, "%d", audio_volume());
+}
+
+/* ---- the patch picker ---- */
+
+static int picker_index(int slot) { return pick_bank * 40 + pick_group * 10 + slot; }   /* the bank holds 10..49 */
+
+static void picker_paint(void)
+{
+    for (int i = 0; i < 2; i++) theme_button_lit(bank_btn[i], i == pick_bank);
+    for (int i = 0; i < 4; i++) theme_button_lit(group_btn[i], i == pick_group);
+    for (int s = 0; s < 10; s++) {
+        int k = picker_index(s);
+        lv_label_set_text_fmt(lv_obj_get_child(pick_btn[s], 0), "%d  %s", SC_PRESET_ADDR[k], SC_PRESETS[k].name);
+        theme_button_lit(pick_btn[s], k == preset);
+    }
+}
+
+static void picker_open(lv_event_t *e)
+{
+    release();
+    pick_bank = preset / 40;
+    pick_group = preset % 40 / 10;
+    picker_paint();
+    lv_obj_set_hidden(picker, false);
+}
+
+static void picker_close(lv_event_t *e) { lv_obj_set_hidden(picker, true); }
+static void picker_bank(lv_event_t *e) { pick_bank = (int)(intptr_t)lv_event_get_user_data(e); picker_paint(); }
+static void picker_group(lv_event_t *e) { pick_group = (int)(intptr_t)lv_event_get_user_data(e); picker_paint(); }
+
+static void picker_pick(lv_event_t *e)
+{
+    preset = picker_index((int)(intptr_t)lv_event_get_user_data(e));
+    audio_request_preset(preset);
+    show_preset();
+    lv_obj_set_hidden(picker, true);
+}
+
+static void picker_build(void)
+{
+    picker = lv_obj_create(play);
+    lv_obj_remove_style_all(picker);
+    lv_obj_set_size(picker, 464, 320 - 46);
+    lv_obj_set_pos(picker, 8, 46);
+    lv_obj_set_style_bg_opa(picker, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(picker, hex(C_PANEL), 0);
+    lv_obj_set_scrollable(picker, false);
+    lv_obj_set_clickable(picker, true);                  /* nothing underneath gets the touches */
+    static const char *const banks[2] = { "10 - 49", "110 - 149" };
+    for (int i = 0; i < 2; i++)
+        bank_btn[i] = theme_button(picker, banks[i], 6 + i * 92, 6, 88, 38, true, picker_bank, (void *)(intptr_t)i);
+    for (int i = 0; i < 4; i++) {
+        char t[4] = { (char)('1' + i), 0 };
+        group_btn[i] = theme_button(picker, t, 196 + i * 54, 6, 50, 38, true, picker_group, (void *)(intptr_t)i);
+    }
+    theme_button(picker, LV_SYMBOL_CLOSE, 414, 6, 44, 38, false, picker_close, NULL);
+    for (int s = 0; s < 10; s++) {
+        lv_obj_t *b = pick_btn[s] = theme_button(picker, "", 6 + (s / 5) * 228, 52 + (s % 5) * 44, 224, 40, true, picker_pick, (void *)(intptr_t)s);
+        lv_obj_t *l = lv_obj_get_child(b, 0);
+        lv_obj_set_width(l, 190);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 22, 0);
+    }
+    lv_obj_set_hidden(picker, true);
+}
+
 static void to_instrument(lv_event_t *e)
 {
     release();
@@ -163,6 +237,8 @@ void ui_build(int p)
     lv_obj_set_style_text_letter_space(logo, 1, 0);
     theme_button(play, LV_SYMBOL_LEFT, 146, 6, 40, 34, false, preset_step, (void *)(intptr_t)-1);
     lv_obj_t *disp = display_box(play, 190, 6, 230, 34);
+    lv_obj_set_clickable(disp, true);
+    lv_obj_add_event_cb(disp, picker_open, LV_EVENT_CLICKED, NULL);
     num_label = theme_label(disp, "", C_LED, 8, 6);
     lv_obj_set_style_text_font(num_label, &lv_font_montserrat_20, 0);
     name_label = theme_label(disp, "", C_INK, 44, 9);
@@ -189,6 +265,18 @@ void ui_build(int p)
     lv_obj_set_style_bg_grad_color(ib, hex(C_ORANGE), 0);
     lv_obj_set_style_text_color(ib, hex(0xfff6ea), 0);
     load_label = theme_label(play, "", C_INK_SOFT, 384, 50);
+
+    /* the volume: the codec's output level, which a preset does not change */
+    theme_title(play, "VOLUME", 14, 114, 452);
+    vol_slider = lv_slider_create(play);
+    lv_slider_set_range(vol_slider, 0, 100);
+    lv_slider_set_value(vol_slider, audio_volume(), LV_ANIM_OFF);
+    lv_obj_set_size(vol_slider, 380, 12);
+    lv_obj_set_pos(vol_slider, 26, 136);
+    theme_slider(vol_slider);
+    lv_obj_add_event_cb(vol_slider, volume_moved, LV_EVENT_VALUE_CHANGED, NULL);
+    vol_label = theme_label(play, "", C_LED, 420, 131);
+    lv_label_set_text_fmt(vol_label, "%d", audio_volume());
     lv_timer_create(tick, 500, NULL);
 
     /* the keyboard on its bed */
@@ -245,5 +333,6 @@ void ui_build(int p)
     lv_obj_add_event_cb(kb, keyboard_event, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(kb, keyboard_event, LV_EVENT_PRESS_LOST, NULL);
 
+    picker_build();
     instrument_build();
 }

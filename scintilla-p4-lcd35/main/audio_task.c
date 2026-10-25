@@ -18,6 +18,10 @@ static esp_codec_dev_handle_t s_codec;
 static atomic_int s_want_preset = -1, s_preset;
 static atomic_int s_load_permille;
 static atomic_bool s_sound = true;
+static atomic_int s_volume = 85, s_volume_set = -1;
+
+void audio_set_volume(int v) { atomic_store(&s_volume, v); }
+int audio_volume(void) { return atomic_load(&s_volume); }
 
 void audio_set_sound(bool on) { atomic_store(&s_sound, on); }
 bool audio_sound(void) { return atomic_load(&s_sound); }
@@ -44,6 +48,8 @@ static void audio_task(void *arg)
         if (!was_on && on) printf("audio: sound on\n");
         was_on = on;
         int p = atomic_exchange(&s_want_preset, -1);
+        int vol = atomic_load(&s_volume);
+        if (vol != s_volume_set) { esp_codec_dev_set_out_vol(s_codec, vol); s_volume_set = vol; }
         for (ev_t e; events_take(&e);) {
             if (!on && e.type <= EV_BEND) continue;
             switch (e.type) {

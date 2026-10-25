@@ -67,7 +67,6 @@ void app_main(void)
     esp_codec_dev_handle_t codec = bsp_audio_codec_speaker_init();
     esp_codec_dev_sample_info_t fs = { .sample_rate = SC_FS, .channel = 1, .bits_per_sample = 16 };
     if (!codec || esp_codec_dev_open(codec, &fs) != 0) { printf("scintilla: no codec\n"); return; }
-    esp_codec_dev_set_out_vol(codec, 85);
     events_init();
     audio_start(codec, 0);
 

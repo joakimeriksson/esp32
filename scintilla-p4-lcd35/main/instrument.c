@@ -197,21 +197,6 @@ void instrument_show(void)
     lv_screen_load(scr);
 }
 
-static void style_slider(lv_obj_t *s)
-{
-    lv_obj_set_style_bg_color(s, hex(C_DISPLAY), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(s, 2, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s, hex(C_ORANGE), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s, 2, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(s, hex(C_BTN_FACE), LV_PART_KNOB);
-    lv_obj_set_style_border_color(s, hex(0x000000), LV_PART_KNOB);
-    lv_obj_set_style_border_width(s, 1, LV_PART_KNOB);
-    lv_obj_set_style_radius(s, 2, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(s, 5, LV_PART_KNOB);
-    lv_obj_set_ext_click_area(s, 12);
-}
-
 void instrument_build(void)
 {
     scr = lv_obj_create(NULL);
@@ -255,7 +240,7 @@ void instrument_build(void)
             lv_slider_set_range(sl, 0, SLIDER_MAX);
             lv_obj_set_size(sl, 200, 12);
             lv_obj_set_pos(sl, x + 8, y + 32);
-            style_slider(sl);
+            theme_slider(sl);
             lv_obj_add_event_cb(sl, slider_moved, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
         } else {
             control[i] = theme_button(pg, p->kind == BOOL ? "ON / OFF" : LV_SYMBOL_LOOP " NEXT", x, y + 24, 216, 28,

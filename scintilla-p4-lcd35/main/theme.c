@@ -87,3 +87,18 @@ void theme_button_lit(lv_obj_t *b, bool lit)
     lv_obj_t *d = lv_obj_get_child(b, 1);
     if (d) lv_obj_set_style_bg_color(d, hex(lit ? C_LED : C_LED_OFF), 0);
 }
+
+void theme_slider(lv_obj_t *s)
+{
+    lv_obj_set_style_bg_color(s, hex(C_DISPLAY), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(s, 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s, hex(C_ORANGE), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s, 2, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s, hex(C_BTN_FACE), LV_PART_KNOB);
+    lv_obj_set_style_border_color(s, hex(0x000000), LV_PART_KNOB);
+    lv_obj_set_style_border_width(s, 1, LV_PART_KNOB);
+    lv_obj_set_style_radius(s, 2, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s, 5, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(s, 12);
+}

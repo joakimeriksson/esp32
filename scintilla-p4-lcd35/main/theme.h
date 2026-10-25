@@ -29,5 +29,6 @@ static inline lv_color_t hex(uint32_t c) { return lv_color_hex(c); }
 void theme_screen(lv_obj_t *scr);                       /* panel background and the wood cheeks */
 lv_obj_t *theme_button(lv_obj_t *parent, const char *text, int x, int y, int w, int h, bool led, lv_event_cb_t cb, void *user);
 void theme_button_lit(lv_obj_t *button, bool lit);      /* the LED in a membrane button */
+void theme_slider(lv_obj_t *slider);                    /* a dark track, orange fill, cream cap */
 lv_obj_t *theme_label(lv_obj_t *parent, const char *text, uint32_t colour, int x, int y);
 lv_obj_t *theme_title(lv_obj_t *parent, const char *text, int x, int y, int w);   /* a section rule with its name */

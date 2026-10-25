@@ -18,4 +18,7 @@ int audio_load_permille(void);
 int audio_preset(void);
 /* sound off: every note stops and the output is silence, until sound is on again */
 void audio_set_sound(bool on);
+/* the codec's output volume, 0..100, set by the audio task between blocks */
+void audio_set_volume(int volume);
+int audio_volume(void);
 bool audio_sound(void);
