@@ -16,3 +16,5 @@ CONFIG_BT_NIMBLE_TRANSPORT_UART=n
 CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
 CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# LVGL on the system heap: the instrument page has some 250 objects, more than its own pool holds
+CONFIG_LV_USE_CLIB_MALLOC=y

@@ -37,6 +37,7 @@ static void audio_task(void *arg)
     int64_t sum = 0, worst = 0, last_report = esp_timer_get_time();
     int blocks = 0;
     bool was_on = true;
+    bool edited = false;
     for (;;) {
         bool on = atomic_load(&s_sound);
         if (was_on && !on) { sc_all_off(&g_synth); printf("audio: sound off\n"); }
@@ -44,15 +45,18 @@ static void audio_task(void *arg)
         was_on = on;
         int p = atomic_exchange(&s_want_preset, -1);
         for (ev_t e; events_take(&e);) {
-            if (!on) continue;
+            if (!on && e.type <= EV_BEND) continue;
             switch (e.type) {
             case EV_NOTE_ON: sc_note_on(&g_synth, e.note, e.val); break;
             case EV_NOTE_OFF: sc_note_off(&g_synth, e.note); break;
             case EV_ALL_OFF: sc_all_off(&g_synth); break;
             case EV_BEND: sc_pitch_bend(&g_synth, e.val); break;
             case EV_PRESET: p = e.val; break;
+            case EV_PARAM8: if (e.off < sizeof g_synth.patch) { ((uint8_t *)&g_synth.patch)[e.off] = (uint8_t)e.val; edited = true; } break;
+            case EV_PARAM32: if (e.off + 4 <= sizeof g_synth.patch && !(e.off & 3)) { *(int32_t *)((uint8_t *)&g_synth.patch + e.off) = e.val; edited = true; } break;
             }
         }
+        if (edited) { sc_reprep(&g_synth); edited = false; }   /* the sounding notes take the change */
         if (p >= 0 && p < SC_N_PRESETS) {
             sc_all_off(&g_synth);
             g_synth.patch = SC_PRESETS[p];
