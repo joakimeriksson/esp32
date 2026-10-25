@@ -5,6 +5,8 @@
  * scan response; advertising starts again after a disconnect. */
 #include <stdio.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_hosted.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -15,6 +17,10 @@
 #include "ble_midi.h"
 #include "ble_midi_parse.h"
 #include "events.h"
+
+/* esp_hosted 2.12.13 (pinned in idf_component.yml) host/drivers/transport/transport_drv.c: whether
+ * the co-processor has come up. Its header is private to the component. */
+extern uint8_t is_transport_rx_ready(void);
 
 /* 03B80E5A-EDE8-4B33-A751-6CE34EC4C700 and 7772E5DB-3868-4112-A1A9-F2669D106BF3, little-endian */
 static const ble_uuid128_t MIDI_SVC = BLE_UUID128_INIT(0x00, 0xc7, 0xc4, 0x4e, 0xe3, 0x6c, 0x51, 0xa7, 0x33, 0x4b, 0xe8, 0xed, 0x5a, 0x0e, 0xb8, 0x03);
@@ -105,7 +111,13 @@ static void host_task(void *p) { nimble_port_run(); nimble_port_freertos_deinit(
 void ble_midi_start(const char *name)
 {
     s_name = name;
+    /* No co-processor on the SDIO bus (a board whose C6 does not answer, or an emulator without
+     * one): ESP-Hosted's NimBLE transport would abort the app, so BLE MIDI stays off instead.
+     * esp_hosted_connect_to_slave returns ESP_OK either way; the transport state says whether the
+     * C6 sent its INIT event, which can come just after it returns. */
     esp_hosted_connect_to_slave();
+    for (int i = 0; i < 30 && !is_transport_rx_ready(); i++) vTaskDelay(pdMS_TO_TICKS(100));
+    if (!is_transport_rx_ready()) { printf("ble-midi: no co-processor answers, BLE MIDI off\n"); return; }
     /* the board's factory C6 firmware does not answer this, but its controller runs from boot */
     if (esp_hosted_bt_controller_init() != ESP_OK || esp_hosted_bt_controller_enable() != ESP_OK)
         printf("ble-midi: the co-processor did not confirm its BT controller; trying HCI anyway\n");
