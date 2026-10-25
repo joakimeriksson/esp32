@@ -2,12 +2,14 @@
 /* The screen, landscape 480 x 320, in three bands: preset and octave at the top, the engine's load in
  * the middle, an 18-key keyboard (C to F, two and a half octaves) at the bottom. The keyboard is drawn
  * as plain objects and hit-tested here, black keys first; sliding across it retriggers. Every note
- * goes to the engine through sc_post from this (the LVGL) task, the queue's one writer. */
+ * goes to the audio task through events_post, as BLE MIDI's do. */
 #include <stdio.h>
 #include "lvgl.h"
 #include "audio_task.h"
 #include "sc_presets.h"
 #include "ui.h"
+#include "events.h"
+#include "ble_midi.h"
 
 #define WHITE   18
 #define KW      26                      /* white key width */
@@ -51,7 +53,7 @@ static void key_paint(int k, bool down)
 
 static void release(void)
 {
-    if (held >= 0) sc_post(&g_synth, SC_EV_NOTE_OFF, (uint8_t)held, 0);
+    if (held >= 0) events_post(EV_NOTE_OFF, (uint8_t)held, 0);
     key_paint(held_key, false);
     held = held_key = -1;
 }
@@ -63,6 +65,7 @@ static void keyboard_event(lv_event_t *e)
     lv_point_t p;
     lv_area_t a;
     lv_indev_get_point(lv_indev_active(), &p);
+    if (code == LV_EVENT_PRESSED) printf("touch %d %d\n", (int)p.x, (int)p.y);
     lv_obj_get_coords(kb, &a);
     int k = key_at(p.x - a.x1, p.y - a.y1);
     if (k == held_key) return;
@@ -71,7 +74,7 @@ static void keyboard_event(lv_event_t *e)
     held_key = k;
     held = key_note(k);
     key_paint(k, true);
-    sc_post(&g_synth, SC_EV_NOTE_ON, (uint8_t)held, VEL);
+    events_post(EV_NOTE_ON, (uint8_t)held, VEL);
 }
 
 static void show_preset(void)
@@ -105,7 +108,9 @@ static void sound_toggle(lv_event_t *e)
 
 static void load_tick(lv_timer_t *t)
 {
-    lv_label_set_text_fmt(load_label, "Scintilla\nengine %d.%d %% of a core", audio_load_permille() / 10, audio_load_permille() % 10);
+    if (audio_preset() != preset) { preset = audio_preset(); show_preset(); }   /* a program change */
+    lv_label_set_text_fmt(load_label, "Scintilla   " LV_SYMBOL_BLUETOOTH " MIDI %s\nengine %d.%d %% of a core",
+                          ble_midi_connected() ? "connected" : "waiting", audio_load_permille() / 10, audio_load_permille() % 10);
 }
 
 static lv_obj_t *button(lv_obj_t *parent, const char *text, int x, int w, lv_event_cb_t cb, int step)
@@ -120,12 +125,20 @@ static lv_obj_t *button(lv_obj_t *parent, const char *text, int x, int w, lv_eve
     return b;
 }
 
+static void any_press(lv_event_t *e)
+{
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    printf("press %d %d\n", (int)p.x, (int)p.y);
+}
+
 void ui_build(int p)
 {
     preset = p;
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_scrollable(scr, false);
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x14161a), 0);
+    lv_obj_add_event_cb(scr, any_press, LV_EVENT_PRESSED, NULL);
 
     button(scr, LV_SYMBOL_LEFT, 4, 44, preset_step, -1);
     name_label = lv_label_create(scr);
@@ -147,7 +160,7 @@ void ui_build(int p)
     lv_obj_set_style_text_color(load_label, lv_color_hex(0x9aa4ae), 0);
     lv_obj_set_pos(load_label, 8, 74);
     lv_label_set_text(load_label, "Scintilla");
-    lv_timer_create(load_tick, 1000, NULL);
+    lv_timer_create(load_tick, 500, NULL);
     lv_obj_t *sb = lv_button_create(scr);
     lv_obj_set_size(sb, 150, 44);
     lv_obj_set_pos(sb, 322, 62);

@@ -14,6 +14,8 @@ void audio_start(esp_codec_dev_handle_t codec, int preset);
 void audio_request_preset(int preset);
 /* the render's mean share of the block budget over the last report, in 1/1000 */
 int audio_load_permille(void);
+/* the preset playing (a MIDI program change can change it too) */
+int audio_preset(void);
 /* sound off: every note stops and the output is silence, until sound is on again */
 void audio_set_sound(bool on);
 bool audio_sound(void);

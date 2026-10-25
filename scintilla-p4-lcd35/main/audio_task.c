@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* The render loop: blocks of SC_BLOCK frames from the engine, mixed to mono for the ES8311 (one
- * DAC), written to the codec, which blocks on I2S DMA. Runs alone on core 1. Note events arrive
- * through the engine's own queue (sc_post, one writer); a preset change is taken between blocks. */
+ * DAC), written to the codec, which blocks on I2S DMA. Runs alone on core 1. Notes, bends and preset
+ * changes arrive from any task through events.h and are applied here, between blocks. */
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -11,10 +11,11 @@
 #include "audio_task.h"
 #include "sc_fixed.h"
 #include "sc_presets.h"
+#include "events.h"
 
 sc_synth_t g_synth;
 static esp_codec_dev_handle_t s_codec;
-static atomic_int s_want_preset = -1;
+static atomic_int s_want_preset = -1, s_preset;
 static atomic_int s_load_permille;
 static atomic_bool s_sound = true;
 
@@ -24,6 +25,7 @@ bool audio_sound(void) { return atomic_load(&s_sound); }
 int audio_load_permille(void) { return atomic_load(&s_load_permille); }
 
 void audio_request_preset(int preset) { atomic_store(&s_want_preset, preset); }
+int audio_preset(void) { return atomic_load(&s_preset); }
 
 static inline int16_t sat16(int32_t v) { return v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v; }
 
@@ -41,10 +43,21 @@ static void audio_task(void *arg)
         if (!was_on && on) printf("audio: sound on\n");
         was_on = on;
         int p = atomic_exchange(&s_want_preset, -1);
+        for (ev_t e; events_take(&e);) {
+            if (!on) continue;
+            switch (e.type) {
+            case EV_NOTE_ON: sc_note_on(&g_synth, e.note, e.val); break;
+            case EV_NOTE_OFF: sc_note_off(&g_synth, e.note); break;
+            case EV_ALL_OFF: sc_all_off(&g_synth); break;
+            case EV_BEND: sc_pitch_bend(&g_synth, e.val); break;
+            case EV_PRESET: p = e.val; break;
+            }
+        }
         if (p >= 0 && p < SC_N_PRESETS) {
             sc_all_off(&g_synth);
             g_synth.patch = SC_PRESETS[p];
             sc_reprep(&g_synth);
+            atomic_store(&s_preset, p);
             printf("audio: preset %d %s\n", p, SC_PRESETS[p].name);
         }
         memset(mix, 0, sizeof mix);
@@ -67,6 +80,7 @@ void audio_start(esp_codec_dev_handle_t codec, int preset)
 {
     s_codec = codec;
     sc_init(&g_synth, &SC_PRESETS[preset]);
+    atomic_store(&s_preset, preset);
     printf("audio: preset %d %s, %u bytes of engine state\n", preset, SC_PRESETS[preset].name, (unsigned)sizeof g_synth);
     xTaskCreatePinnedToCore(audio_task, "audio", 12288, NULL, 20, NULL, 1);
 }
