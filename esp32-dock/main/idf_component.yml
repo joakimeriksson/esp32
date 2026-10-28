@@ -1,0 +1,6 @@
+dependencies:
+  # WiFi through the board's C6 (ESP-Hosted over SDIO); no BSP: main/board.c is the board
+  espressif/esp_wifi_remote:
+    version: ">=0.10,<2.0"
+  espressif/esp_hosted:
+    version: "==2.12.13"
