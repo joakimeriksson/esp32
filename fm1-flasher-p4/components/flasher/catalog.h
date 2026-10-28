@@ -35,6 +35,9 @@ extern char catalog_updated[32];   /* the Hub's "updated" of the catalog in use 
 bool catalog_fetch(bool *offline, char *err, size_t errlen);
 /* an SD card is there (mounted) */
 bool catalog_card(void);
+/* a file from the card's /fm1 into PSRAM (free() *out): its length, -1 when it is not there or
+ * is over max */
+int catalog_card_file(const char *name, uint8_t **out, size_t max);
 /* one package fetched, checked against the catalog (size, SHA-256) and saved to the card's mirror */
 bool catalog_save(const fw_entry_t *e, void (*progress)(size_t, size_t), char *why, size_t whylen);
 /* its copy on the card deleted */

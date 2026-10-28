@@ -927,3 +927,6 @@ void ui_mod_saved(const module_entry_t *m, bool on_card, const char *why)
     mpage_buttons();
     unlock();
 }
+
+/* the library (the FM-1 browsing the P4): not on this screen yet; the log has it */
+void ui_library(const char *text) { (void)text; }

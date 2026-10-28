@@ -27,3 +27,5 @@ void ui_mod_progress(int pct);
 void ui_mod_done(bool ok, const char *msg);
 void ui_mod_saved(const module_entry_t *m, bool on_card, const char *why);
 void ui_wifi_list(const wifi_ap_record_t *aps, int n);
+/* the library (the FM-1 browsing the P4): what happens, one line at a time */
+void ui_library(const char *text);

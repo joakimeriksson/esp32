@@ -1,20 +1,24 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 #include "flasher.h"
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "usb_midi.h"
 #include "net.h"
+#include "library.h"
 #include "ui.h"
 
 static const char *TAG = "flasher";
 
 typedef enum {
     CMD_REFRESH, CMD_PREPARE, CMD_INSTALL, CMD_SAVE, CMD_REMOVE, CMD_SAVE_ALL, CMD_WIFI_SCAN, CMD_WIFI_CONNECT,
-    CMD_MOD_DEPLOY, CMD_MOD_SAVE, CMD_MOD_REMOVE, CMD_DOCK_SELECT, CMD_DOCK_DELETE, CMD_DOCK_LIST,
+    CMD_MOD_DEPLOY, CMD_MOD_SAVE, CMD_MOD_REMOVE, CMD_DOCK_SELECT, CMD_DOCK_DELETE, CMD_DOCK_LIST, CMD_BROWSE,
 } cmd_kind_t;
 
 typedef struct {
@@ -151,6 +155,185 @@ static void install(void)
     ui_install_done(e, msg);
 }
 
+/* ------------------------------------------------------------------------------ the library --- */
+
+static bool lib_on, lib_running, lib_want;
+static uint32_t lib_gen;              /* the connection the browser was sent on (once per plug-in) */
+static const uint8_t *lib_probe;      /* the app's browser, else the card's */
+static size_t lib_probe_n;
+static struct { uint8_t kind; int index; } lib_map[CATALOG_MAX + MODULES_MAX];   /* the table's lines */
+static int lib_map_n;
+
+void flasher_library(bool on) { lib_on = on; }
+void flasher_library_probe(const uint8_t *blob, size_t n) { lib_probe = blob; lib_probe_n = n; }
+
+static void lib_say(const char *fmt, ...)
+{
+    char text[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    ESP_LOGI(TAG, "library: %s", text);
+    ui_library(text);
+}
+
+static void wr16(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; }
+
+/* the table: the modules (fm1-dock's page's and the card's), then the firmwares */
+static size_t lib_table(uint8_t *t, size_t cap, const dev_info_t *d)
+{
+    size_t n = 0;
+    lib_map_n = 0;
+    for (int i = 0; i < modules_n && n < cap; i++) {
+        const module_entry_t *m = &modules[i];
+        uint8_t *e = t + LIB_HEAD + n * LIB_ENTRY;
+        memset(e, 0, LIB_ENTRY);
+        e[0] = LIB_MODULE;
+        e[1] = (m->size <= d->hello.largest ? LIB_F_FITS : 0) | (m->on_card ? LIB_F_CARD : 0);
+        wr16(e + 2, (m->size + 1023) / 1024);
+        strncpy((char *)e + 4, m->title, 20);
+        strncpy((char *)e + 24, m->version, 8);
+        lib_map[lib_map_n].kind = LIB_MODULE;
+        lib_map[lib_map_n++].index = i;
+        n++;
+    }
+    const fw_entry_t *now = catalog_installed(d->id.text);
+    for (int i = 0; i < catalog_n && n < cap; i++) {
+        const fw_entry_t *f = &catalog[i];
+        uint8_t *e = t + LIB_HEAD + n * LIB_ENTRY;
+        memset(e, 0, LIB_ENTRY);
+        e[0] = LIB_FIRMWARE;
+        e[1] = (f->on_card || f->src == SRC_SD ? LIB_F_CARD : 0) | (f == now ? LIB_F_INSTALLED : 0) | (f->beta ? LIB_F_BETA : 0) |
+               (f->src == SRC_STOCK ? LIB_F_OFFICIAL : 0);
+        wr16(e + 2, (f->size + 1023) / 1024);
+        strncpy((char *)e + 4, f->name, 20);
+        strncpy((char *)e + 24, f->version, 8);
+        lib_map[lib_map_n].kind = LIB_FIRMWARE;
+        lib_map[lib_map_n++].index = i;
+        n++;
+    }
+    return n;
+}
+
+/* the browser sent and started on the FM-1, with the library in it */
+static void lib_start(void)
+{
+    char msg[160];
+    dev_info_t d;
+    uint8_t *blob = NULL;
+    size_t n;
+    flasher_device(&d);
+    lib_want = false;
+    lib_gen = usb_midi_generation();
+    if (lib_probe) {
+        n = lib_probe_n;
+        blob = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+        if (blob) memcpy(blob, lib_probe, n);
+    } else {
+        int k = catalog_card_file("browser.dock", &blob, FM1_DOCK_PROBE_FILE);
+        if (k < 0) {
+            lib_say("no browser: none built in, none on the card (/fm1/browser.dock)");
+            return;
+        }
+        n = k;
+    }
+    if (!blob) return;
+    long at = fm1_dock_probe_find(blob, n, LIB_MAGIC);
+    if (at < 0) {
+        lib_say("the browser probe has no library table in it");
+        free(blob);
+        return;
+    }
+    fm1_dock_info_t info;
+    fm1_dock_module_info(blob, n, &info);
+    const uint8_t *head = blob + info.image + info.code_size + at;
+    size_t cap = head[4] | (head[5] << 8);
+    if (cap > (size_t)(CATALOG_MAX + MODULES_MAX)) cap = CATALOG_MAX + MODULES_MAX;
+    size_t tn = LIB_HEAD + cap * LIB_ENTRY;
+    uint8_t *t = calloc(1, tn);
+    if (!t) {
+        free(blob);
+        return;
+    }
+    memcpy(t, head, LIB_HEAD);
+    size_t filled = lib_table(t, cap, &d);
+    wr16(t + 6, filled);
+    bool ok = fm1_dock_probe_patch(blob, n, at, t, tn);
+    free(t);
+    if (ok) ok = fm1_dock_run(&io, blob, n, LIB_RUN_ID, NULL, 0, NULL, NULL, msg, sizeof msg);
+    free(blob);
+    if (!ok) {
+        lib_say("%s", msg);
+        return;
+    }
+    lib_running = true;
+    int nm = 0;
+    for (int i = 0; i < lib_map_n; i++) nm += lib_map[i].kind == LIB_MODULE;
+    lib_say("the browser is on the FM-1: %d modules, %d firmwares", nm, lib_map_n - nm);
+    (void)filled;
+}
+
+
+/* what the FM-1 picked */
+static void lib_pick(int32_t rc)
+{
+    if (rc <= 0) {
+        lib_say("the browser was left (nothing picked); again at the next plug-in, or browse");
+        return;
+    }
+    int i = rc - 1;
+    if (i >= lib_map_n) {
+        lib_say("the pick (%ld) is outside the list", (long)rc);
+        return;
+    }
+    if (lib_map[i].kind == LIB_MODULE) {
+        module_entry_t m = modules[lib_map[i].index];
+        lib_say("picked the module %s", m.title);
+        mod_deploy(&m);
+    } else {
+        fw_entry_t e = catalog[lib_map[i].index];
+        char why[200] = "";
+        lib_say("picked the firmware %s %s (the risk accepted on the FM-1)", e.name, e.version);
+        package_free(&pkg);
+        bool ok = package_prepare(&e, &pkg, on_download, why, sizeof why);
+        ui_prepared(&pkg, ok, why);
+        if (!ok) {
+            lib_say("%s %s: %s", e.name, e.version, why);
+            return;
+        }
+        install();
+        probe();
+    }
+}
+
+/* the run's end, when it comes; between times the worker goes on */
+static void lib_poll(void)
+{
+    if (!lib_running) return;
+    int r = fm1_dock_run_wait(&io, 100);
+    if (r == FM1_DOCK_WAITING) return;
+    lib_running = false;
+    if (r == -1) {
+        lib_say("the FM-1 went away while browsing");
+    } else if (r == FM1_DOCK_LOST) {
+        lib_say("the browser never started (the start was lost): sent again");
+        lib_want = true;
+    } else if (r == FM1_DOCK_CRASHED) {
+        fm1_dock_result_t res;
+        uint8_t none[1];
+        fm1_dock_result(&io, &res, none, 0);
+        lib_say("the browser %s on the FM-1 (pc %08lx)", fm1_dock_probe_state(res.state), (unsigned long)res.pc);
+    } else if (r > 0) {
+        lib_say("fm1-dock refused the browser: %s", fm1_dock_status(r));
+    } else {
+        fm1_dock_result_t res;
+        uint8_t none[1];
+        if (fm1_dock_result(&io, &res, none, 0) < 0 || res.id != LIB_RUN_ID) lib_say("the browser's result did not come");
+        else lib_pick(res.rc);
+    }
+}
+
 static bool hub_loaded;   /* from the net, not the card's copy */
 static volatile bool saving, save_stop;
 
@@ -178,7 +361,13 @@ static void poll(void)
     if (up != was_up || (up && usb_midi_generation() != gen)) {
         was_up = up;
         gen = usb_midi_generation();
+        lib_running = false;
         probe();
+    }
+    if (lib_on && up && !lib_running && !saving) {
+        dev_info_t d;
+        flasher_device(&d);
+        if (d.dock && (lib_want || gen != lib_gen)) lib_start();
     }
     net_state_t ns = net_state();
     if (ns != net) {
@@ -201,7 +390,8 @@ static void task(void *arg)
     cmd_t c;
     refresh();   /* the card's catalog and packages, before (or without) WiFi */
     for (;;) {
-        if (xQueueReceive(cmds, &c, pdMS_TO_TICKS(300)) == pdTRUE) {
+        lib_poll();
+        if (xQueueReceive(cmds, &c, pdMS_TO_TICKS(lib_running ? 50 : 300)) == pdTRUE) {
             switch (c.kind) {
             case CMD_REFRESH:
                 refresh();
@@ -259,6 +449,9 @@ static void task(void *arg)
             }
             case CMD_DOCK_LIST:
                 dock_list();
+                break;
+            case CMD_BROWSE:
+                lib_want = true;
                 break;
             case CMD_WIFI_SCAN: {
                 static wifi_ap_record_t aps[24];
@@ -337,6 +530,7 @@ void flasher_mod_remove(const module_entry_t *m) { post_module(CMD_MOD_REMOVE, m
 void flasher_dock_select(const char *name) { post_name(CMD_DOCK_SELECT, name); }
 void flasher_dock_delete(const char *name) { post_name(CMD_DOCK_DELETE, name); }
 void flasher_dock_list(void) { post_kind(CMD_DOCK_LIST); }
+void flasher_browse(void) { post_kind(CMD_BROWSE); }
 
 void flasher_prepare(const fw_entry_t *e) { post_entry(CMD_PREPARE, e); }
 void flasher_save(const fw_entry_t *e) { post_entry(CMD_SAVE, e); }

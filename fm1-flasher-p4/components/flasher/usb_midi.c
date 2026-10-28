@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* USB-MIDI host: the USB Host Library through the BSP (bsp_usb_host_start, the OTG high-speed port),
+/* USB-MIDI host: the USB Host Library on the board's host port (board_usb_host_start),
  * one client task that opens a device with a MIDI streaming interface (class 1, subclass 3), keeps
  * a bulk IN transfer going and reassembles SysEx into a queue; sends are one bulk OUT transfer. */
 #include "usb_midi.h"
@@ -9,7 +9,7 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "usb/usb_host.h"
-#include "bsp/esp-bsp.h"
+#include "board.h"
 
 static const char *TAG = "usb_midi";
 
@@ -226,7 +226,7 @@ void usb_midi_start(void)
     s.q = xQueueCreate(QUEUE_LEN, sizeof(msg_t));
     s.out_done = xSemaphoreCreateBinary();
     s.send_lock = xSemaphoreCreateMutex();
-    ESP_ERROR_CHECK(bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, true));
+    board_usb_host_start();
     xTaskCreatePinnedToCore(client_task, "usb_midi", 4096, NULL, 9, NULL, 0);
 }
 

@@ -44,14 +44,18 @@ after Felucca's `web/fm1ota.js`, GPL-3.0):
 ## Layout
 
 - `components/fm1/`: the package checks and the install in plain C, no ESP-IDF (`fm1_pkg.c`, `fm1_ota.c`);
-- `main/usb_midi.c`: a USB-MIDI host on the USB Host Library (the BSP's `bsp_usb_host_start`, the OTG
-  high-speed port): the MIDI streaming interface's bulk endpoints, SysEx in and out of 4-byte event packets;
-- `main/net.c`: WiFi through the C6 (ESP-Hosted), the network in NVS, HTTPS into PSRAM;
-- `components/fm1/fm1_dock.c`: fm1-dock's deploy protocol, plain C too;
-- `main/catalog.c`: the Hub, the official V15, fm1-dock's release and modules, the SD card and its mirror;
-  a package's checks;
-- `main/flasher.c`: the worker task (the device's identity, downloads, the install, WiFi);
-- `main/ui.c`: the screen, landscape as in scintilla-p4-lcd35.
+  `fm1_dock.c`: fm1-dock's deploy protocol and its probes (RUN / RESULT, a probe's data patched), plain C too;
+- `components/flasher/`: the flasher without a screen or a board, shared with [esp32-dock](../esp32-dock):
+  - `usb_midi.c`: a USB-MIDI host on the USB Host Library: the MIDI streaming interface's bulk endpoints,
+    SysEx in and out of 4-byte event packets;
+  - `net.c`: WiFi through the C6 (ESP-Hosted), the network in NVS, HTTPS into PSRAM;
+  - `catalog.c`: the Hub, the official V15, fm1-dock's release and modules, the SD card and its mirror;
+    a package's checks;
+  - `flasher.c`: the worker task (the device's identity, downloads, the install, WiFi, the library: the
+    browser probe onto an fm1-dock, its pick acted on);
+  - `ui.h`: what the worker tells the app (the app provides these); `board.h`: what the board provides;
+- `main/ui.c`: the screen, landscape as in scintilla-p4-lcd35; `main/board.c`: the Waveshare board through
+  its BSP (the OTG port as USB host, the card).
 
 ## Build and test
 
@@ -63,7 +67,9 @@ idf.py build flash monitor -b 230400
 ```
 
 At 230400 baud, as for scintilla-p4-lcd35 (faster stops part way on this board). The console is UART0, the
-board's USB-C (a CH343); the FM-1 goes on the other USB port, the P4's own.
+board's USB-C (a CH343); the FM-1 goes on the other USB port, the P4's own. Without ESP-IDF installed,
+[`../p4.sh`](../p4.sh) builds in the `espressif/idf:v5.5.4` Docker image and flashes with `esptool` through
+`uv` (`../p4.sh build`, `flash`, `monitor` in the project's directory).
 
 The protocol and the checks on the computer, against fm1-dock's Python on real packages (the package lines
 diffed against `fm1_install.py`'s, then whole installs against a simulated FM-1: the full way, a resumed
@@ -71,12 +77,15 @@ write, another firmware's loader, an SMK-37, the cable out, a firmware that does
 identity after the write, nothing on the cable):
 
 ```sh
-test/run.sh ~/path/to/fm1-dock fm1-dock-0.6.fwsc FM-1_015.fwsc zp12-2.5.fwsc ... docs/modules/*.dock
+test/run.sh ~/path/to/fm1-dock fm1-dock-0.6.fwsc FM-1_015.fwsc zp12-2.5.fwsc ... docs/modules/*.dock docs/probes/*.dock
 ```
 
 The `.dock` files the same way against `tools/hbdeploy.py` (the deploy frames byte for byte), then
 deploys against a simulated fm1-dock: list, play, delete, lost frames, no room, a lost COMMIT answer,
-another ABI, a boot module, no fm1-dock.
+another ABI, a boot module, no fm1-dock. The probes (`.dock` files with the probe flag): their frames end
+with RUN as `probe.py` sends it; against the simulated fm1-dock a run and its RESULT, a patched byte
+(the file CRC redone, as fm1-dock checks it), a lost RUN and a lost RUN answer (found out through
+HELLO and RESULT), a COMMIT of a probe refused.
 
 The official V15 fails fm1-dock's file CRC check (its `USR` file), in the Python too: it is taken by its
 SHA-256 alone (the digest Felucca and the Hub pin). Firmwares with M-VAVE's loader (the Hub's `loader:
@@ -93,6 +102,6 @@ USB-UART and dimmed the screen. Give the board a stronger supply (a powered hub,
 on it; the boot log says `started after BROWNOUT` when it is that.
 
 Next ([PLAN.md](PLAN.md)): a real install, the ROM-bootloader rescue (the Linux-only one, here), the
-SMK-37, and the FM-1 browsing the P4's card (a browser streamed into RAM).
+SMK-37. The FM-1 browsing the P4 is [esp32-dock](../esp32-dock), the same worker without a screen.
 
 GPL-3.0-only ([LICENSE](LICENSE)), as the installers it follows.

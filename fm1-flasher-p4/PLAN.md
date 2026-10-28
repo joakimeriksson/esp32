@@ -54,7 +54,19 @@ and the SD card, over USB-MIDI from the P4's USB host port; fm1-dock's modules t
 9. The SMK-37 family (the checks already tell the boards apart).
 10. The FM-1 browses the P4 (below).
 
-## Later: the FM-1 browses the P4's card
+## The FM-1 browses the P4: esp32-dock (2026-10-28)
+
+Done the small way, in [esp32-dock](../esp32-dock) with this project's `components/`: the browser is a
+*probe* (fm1-dock's own: sent as a deploy, RUN instead of COMMIT, run from RAM, nothing written) that the P4
+sends when an fm1-dock is plugged in, the library list patched into its `.data` (`library.h`); its `run()`
+returns the pick, read with RESULT, then the normal deploy or install. On the P4: `fm1_dock_run` /
+`fm1_dock_run_wait` / `fm1_dock_result` / `fm1_dock_probe_patch` in `components/fm1`, tested against
+`probe.py`'s frames and a simulated fm1-dock; the worker's library mode. Still to do on the FM-1 side:
+fm1-dock's probe context gains `poll`, the panel and the encoders (about 150 bytes of host flash), and
+`probes/browser.c` itself. The plan below (a module started from RAM, frames up the cable, a picker line)
+stays for "try before you keep" and tunes from the card.
+
+## Later: the FM-1 browses the P4's card, the long way
 
 The FM-1's flash is small (28 KB free with 5 modules); the card holds everything. The FM-1 picks from the
 card on its own screen and keys, and the P4 serves it.

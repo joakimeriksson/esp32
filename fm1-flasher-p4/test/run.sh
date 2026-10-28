@@ -1,6 +1,6 @@
 #!/bin/sh
 # components/fm1 on the computer, against fm1-dock's Python (tools/fm1_install.py, tools/hbdeploy.py):
-#   test/run.sh FM1_DOCK_CHECKOUT PACKAGE.fwsc... MODULE.dock...
+#   test/run.sh FM1_DOCK_CHECKOUT PACKAGE.fwsc... MODULE.dock... PROBE.hrbr...
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 dock=$1; shift
@@ -9,7 +9,7 @@ mkdir -p "$out"
 pkgs=""; mods=""
 for f in "$@"; do
     case "$f" in
-    *.dock) mods="$mods $f" ;;
+    *.dock|*.hrbr) mods="$mods $f" ;;
     *) pkgs="$pkgs $f" ;;
     esac
 done

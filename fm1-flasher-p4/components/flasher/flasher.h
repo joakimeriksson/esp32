@@ -45,3 +45,11 @@ void flasher_dock_list(void);
 int flasher_dock_modules(fm1_dock_module_t *out, int max);
 /* the device as last seen (copied) */
 void flasher_device(dev_info_t *out);
+
+/* The library: the FM-1 browses the P4 on its own screen. The browser, a probe (fm1-dock runs it
+ * from RAM, nothing written), is sent to an fm1-dock once when it is plugged in, the list patched
+ * in (library.h); its pick is deployed or installed. Again on the next plug-in, or flasher_browse.
+ * The probe: flasher_library_probe's, else /sdcard/fm1/browser.dock. */
+void flasher_library(bool on);
+void flasher_library_probe(const uint8_t *blob, size_t n);
+void flasher_browse(void);

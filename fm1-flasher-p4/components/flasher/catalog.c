@@ -15,11 +15,8 @@
 #include "esp_log.h"
 #include "mbedtls/sha256.h"
 #include "freertos/FreeRTOS.h"
-#include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
-#include "driver/sdmmc_host.h"
-#include "sd_pwr_ctrl_by_on_chip_ldo.h"
-#include "bsp/esp-bsp.h"
+#include "board.h"
 #include "net.h"
 
 static const char *TAG = "catalog";
@@ -27,7 +24,7 @@ static const char *TAG = "catalog";
 #define HUB "https://thefirmwarehub.com/"
 #define DOCK_RELEASE "https://api.github.com/repos/joakimeriksson/fm1-dock/releases/latest"
 #define PKG_MAX (1024 * 1024)   /* the FM-1 has 1 MB of flash */
-#define CARD_FM1 BSP_SD_MOUNT_POINT "/fm1"
+#define CARD_FM1 BOARD_SD_MOUNT_POINT "/fm1"
 #define MIRROR CARD_FM1 "/hub"
 #define HUB_CACHE MIRROR "/catalog.json"
 #define DOCK_CACHE MIRROR "/fm1-dock.json"
@@ -77,34 +74,12 @@ static int by_name(const void *a, const void *b)
 static bool sd_mounted;
 static sdmmc_card_t *sd_card;
 
-/* The BSP's bsp_sdcard_mount, but at the default 20 MHz (its 40 MHz high speed has failed to start
- * the card here: send_scr timing out) and with the card's LDO released when the mount fails (the
- * BSP keeps it, and every later try fails to get it). Never formats. */
-static esp_err_t mount_once(void)
-{
-    const esp_vfs_fat_sdmmc_mount_config_t mc = { .format_if_mount_failed = false, .max_files = 5, .allocation_unit_size = 64 * 1024 };
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.slot = SDMMC_HOST_SLOT_0;   /* the C6's SDIO is slot 1: a failed mount deinits only this one */
-    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
-    const sd_pwr_ctrl_ldo_config_t ldo = { .ldo_chan_id = 4 };
-    sd_pwr_ctrl_handle_t pwr;
-    esp_err_t r = sd_pwr_ctrl_new_on_chip_ldo(&ldo, &pwr);
-    if (r != ESP_OK) return r;
-    host.pwr_ctrl_handle = pwr;
-    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot.width = 4;
-    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;   /* the BSP has none; weak, but the card has its own */
-    r = esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot, &mc, &sd_card);
-    if (r != ESP_OK) sd_pwr_ctrl_del_on_chip_ldo(pwr);
-    return r;
-}
-
 /* at boot and on a refresh: a card put in later, or one that did not start */
 static bool sd_try_mount(void)
 {
     for (int i = 0; i < 3 && !sd_mounted; i++) {
         if (i) vTaskDelay(pdMS_TO_TICKS(250));
-        esp_err_t r = mount_once();
+        esp_err_t r = board_sd_mount(BOARD_SD_MOUNT_POINT, &sd_card);
         sd_mounted = r == ESP_OK;
         if (sd_mounted) {
             ESP_LOGI(TAG, "SD card: %s, %llu MB", sd_card->cid.name,
@@ -119,6 +94,15 @@ static bool sd_try_mount(void)
 static bool sd_mount(void) { return sd_mounted; }
 
 bool catalog_card(void) { return sd_mounted; }
+
+static int read_file(const char *path, uint8_t **out, size_t max);
+int catalog_card_file(const char *name, uint8_t **out, size_t max)
+{
+    char path[300];
+    if (!sd_mount()) return -1;
+    snprintf(path, sizeof path, CARD_FM1 "/%s", name);
+    return read_file(path, out, max);
+}
 
 static int read_file(const char *path, uint8_t **out, size_t max)
 {
@@ -398,7 +382,7 @@ int catalog_scan_sd(void)
     drop(SRC_SD);
     if (!sd_try_mount()) return 0;
     int before = catalog_n;
-    scan_dir(BSP_SD_MOUNT_POINT);
+    scan_dir(BOARD_SD_MOUNT_POINT);
     scan_dir(CARD_FM1);   /* not its hub/ mirror: those are the catalog's */
     mark_on_card();
     qsort(catalog, catalog_n, sizeof *catalog, by_name);
@@ -676,7 +660,7 @@ bool modules_fetch(bool *offline, char *err, size_t errlen)
     if (sd_mounted) {
         mod_scan_dir(MOD_MIRROR);
         mod_scan_dir(CARD_FM1);
-        mod_scan_dir(BSP_SD_MOUNT_POINT);
+        mod_scan_dir(BOARD_SD_MOUNT_POINT);
     }
     return root != NULL;
 }

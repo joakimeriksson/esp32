@@ -57,6 +57,18 @@ static struct {
     uint32_t largest;             /* the largest gap in its flash */
     bool lose_commit_answer;      /* COMMIT is done, its answer lost */
     int frames;
+    /* probes: RUN checks the file as harbor's pr_run, "runs" it (rc, out), answers when run_ms have passed */
+    bool run_pending;
+    uint8_t run_seq;
+    uint32_t run_due, run_ms;
+    uint32_t run_id;
+    uint8_t run_arg[512];
+    size_t run_argn;
+    int32_t rc;
+    uint8_t out[8192];
+    uint32_t out_n;
+    uint8_t pstate;
+    int runs;
 } dk;
 
 static void reply(uint8_t cmd, uint8_t seq, const uint8_t *r, size_t n)
@@ -71,6 +83,7 @@ static void dock_frame(const uint8_t *m, size_t n)
     uint8_t cmd = m[4], seq = m[5];
     size_t k = fm1_unpack7(m + 6, n - 7, d), rn = 1;
     if (dk.drop_every && ++dk.frames % dk.drop_every == 0) return;
+    if (dk.run_pending) return;           /* the main loop holds while the probe runs: nothing answers */
     if (k < 4 || fm1_crc32(d, k - 4) != rd32(d + k - 4)) {
         r[0] = 10;
         reply(0x3F, seq, r, 1);
@@ -113,6 +126,7 @@ static void dock_frame(const uint8_t *m, size_t n)
     }
     case FM1_DOCK_COMMIT:
         if (!dk.rx) { r[0] = 8; break; }
+        if (rd32(dk.buf + 8) & 0x100) { r[0] = 11; dk.rx = false; break; }   /* a probe: refused */
         dk.rx = false;
         if (fm1_crc32(dk.buf, dk.size) != dk.crc) { r[0] = 1; break; }
         memcpy(dk.names[dk.n], dk.name, 24);
@@ -139,10 +153,53 @@ static void dock_frame(const uint8_t *m, size_t n)
         rn = 2;
         break;
     }
+    case FM1_DOCK_RUN: {                  /* harbor's pr_run checks, then the "run" */
+        if (!dk.rx) { r[0] = 8; break; }
+        dk.rx = false;
+        const uint8_t *f = dk.buf;
+        if (fm1_crc32(dk.buf, dk.size) != dk.crc) { r[0] = 1; break; }
+        uint32_t flags = rd32(f + 8), code = rd32(f + 40), data = rd32(f + 44), rt = rd32(f + 52), relocs = rd32(f + 68);
+        if (rd32(f) != FM1_DOCK_MAGIC || rd32(f + 4) != SIM_ABI || !(flags & 0x100) || relocs > 65536) { r[0] = 2; break; }
+        uint32_t io = (80 + 4 * relocs + 255) & ~255u, isz = code + data + rt;
+        if (io + isz > dk.size) { r[0] = 2; break; }
+        if (io + isz > 0x30000) { r[0] = 3; break; }
+        uint32_t c = fm1_crc32_upd(0, f, 76);
+        c = fm1_crc32_upd(c, f + 80, 4 * relocs);
+        c = fm1_crc32_upd(c, f + io, isz);
+        if (c != rd32(f + 76)) { r[0] = 1; break; }
+        dk.run_id = k >= 4 ? rd32(d) : 0;
+        dk.run_argn = k >= 4 ? k - 4 : 0;
+        memcpy(dk.run_arg, d + 4, dk.run_argn);
+        dk.runs++;
+        dk.pstate = 1;
+        dk.run_pending = true;
+        dk.run_seq = seq;
+        dk.run_due = dk.now + dk.run_ms;
+        return;                           /* answered when the run is done (sim_read) */
+    }
+    case FM1_DOCK_RESULT: {
+        static uint8_t b[208];
+        uint32_t from = k >= 4 ? rd32(d) : 0, m = 0;
+        memset(b, 0, 28);
+        b[1] = dk.pstate;
+        wr32(b + 4, dk.run_id); wr32(b + 8, (uint32_t)dk.rc); wr32(b + 12, 4242); wr32(b + 16, dk.out_n); wr32(b + 20, 0);
+        wr32(b + 24, from);
+        while (from + m < dk.out_n && m < 180) { b[28 + m] = dk.out[from + m]; m++; }
+        reply(cmd, seq, b, 28 + m);
+        return;
+    }
     default:
         r[0] = 10;
     }
     reply(cmd, seq, r, rn);
+}
+
+static void run_done(void)                /* the probe returns: rc and the output as it left them */
+{
+    uint8_t r[8] = { 0 };
+    dk.run_pending = false;
+    dk.pstate = 2;
+    if (!dk.lose_commit_answer) reply(FM1_DOCK_RUN, dk.run_seq, r, 1);
 }
 
 static bool sim_up(void) { return true; }
@@ -153,6 +210,10 @@ static bool sim_send(const uint8_t *p, size_t n)
 }
 static int sim_read(uint8_t *buf, size_t cap, uint32_t ms)
 {
+    if (dk.qh == dk.qt && dk.run_pending && (int32_t)(dk.run_due - dk.now) <= (int32_t)ms) {
+        dk.now = dk.run_due;
+        run_done();
+    }
     if (dk.qh == dk.qt) {
         dk.now += ms;
         return 0;
@@ -199,7 +260,12 @@ static void frames_line(const char *path, const uint8_t *blob, size_t n)
         memcpy(p + 4, blob + off, c);
         o += fm1_dock_frame(FM1_DOCK_DATA, i++ & 0x7F, p, 4 + c, all + o);
     }
-    o += fm1_dock_frame(FM1_DOCK_COMMIT, i++ & 0x7F, NULL, 0, all + o);
+    if (info.flags & FM1_DOCK_F_PROBE) {
+        uint8_t run[4] = { 1, 0, 0, 0 };
+        o += fm1_dock_frame(FM1_DOCK_RUN, i++ & 0x7F, run, 4, all + o);
+    } else {
+        o += fm1_dock_frame(FM1_DOCK_COMMIT, i++ & 0x7F, NULL, 0, all + o);
+    }
     const char *base = strrchr(path, '/');
     printf("%s: name=%s version=%u abi=%u flags=0x%x n=%zu frames=%zu:%08x\n", base ? base + 1 : path, info.name,
            info.version, info.abi, info.flags, n, o, fm1_crc32(all, o));
@@ -268,13 +334,98 @@ static void test_deploys(uint8_t *blob, size_t n)
     CHECK(fm1_dock_list(&sim, mods, FM1_DOCK_MODS_MAX) == -1);
 }
 
+static void test_probe(uint8_t *blob, size_t n)
+{
+    char msg[160];
+    fm1_dock_info_t info;
+    fm1_dock_result_t res;
+    uint8_t out[8192];
+    CHECK(fm1_dock_module_info(blob, n, &info) && (info.flags & FM1_DOCK_F_PROBE));
+
+    /* the file's CRC as stored is what the patch computes (the layout is understood) */
+    uint32_t stored = rd32(blob + 76);
+    uint8_t one[1];
+    if (info.data_size) {
+        one[0] = blob[info.image + info.code_size];
+        CHECK(fm1_dock_probe_patch(blob, n, 0, one, 1));   /* the same byte: the CRC must come out the same */
+        CHECK(rd32(blob + 76) == stored);
+    }
+    CHECK(!fm1_dock_probe_patch(blob, n, info.data_size, one, 1));   /* outside .data */
+    CHECK(fm1_dock_probe_find(blob, n, 0x12345678u) == -1);
+
+    /* a run: sent, started, the answer when it returns; the result */
+    sim_reset();
+    dk.run_ms = 5000;
+    dk.rc = 7;
+    dk.out_n = 300;
+    for (uint32_t i = 0; i < dk.out_n; i++) dk.out[i] = (uint8_t)i;
+    uint8_t arg[3] = { 1, 2, 3 };
+    bool ok = fm1_dock_run(&sim, blob, n, 42, arg, 3, NULL, NULL, msg, sizeof msg);
+    fprintf(stderr, "  run: %d %s\n", ok, msg);
+    CHECK(ok && dk.runs == 1 && dk.run_id == 42 && dk.run_argn == 3 && dk.run_arg[2] == 3 && !dk.rx);
+    CHECK(fm1_dock_run_wait(&sim, 300) == FM1_DOCK_WAITING);
+    CHECK(fm1_dock_run_wait(&sim, 300) == FM1_DOCK_WAITING);
+    CHECK(fm1_dock_run_wait(&sim, 10000) == 0);
+    CHECK(fm1_dock_run_wait(&sim, 10) == -1);   /* no run on */
+    int k = fm1_dock_result(&sim, &res, out, sizeof out);
+    CHECK(k == 300 && res.state == 2 && res.id == 42 && res.rc == 7 && res.out_n == 300 && out[299] == 299 % 256 && out[0] == 0);
+    k = fm1_dock_result(&sim, &res, out, 100);   /* less of it */
+    CHECK(k == 300 && out[99] == 99);
+
+    /* a deploy of a probe is refused here; a COMMIT of one by fm1-dock */
+    sim_reset();
+    CHECK(!fm1_dock_deploy(&sim, blob, n, NULL, NULL, msg, sizeof msg) && !dk.rx);
+    fprintf(stderr, "  deploy of a probe: %s\n", msg);
+
+    /* a patched byte without the CRC redone: fm1-dock refuses the RUN */
+    sim_reset();
+    if (info.data_size) {
+        blob[info.image + info.code_size] ^= 0xFF;
+        CHECK(fm1_dock_run(&sim, blob, n, 1, NULL, 0, NULL, NULL, msg, sizeof msg));
+        CHECK(fm1_dock_run_wait(&sim, 1000) == 1 && dk.runs == 0);
+        blob[info.image + info.code_size] ^= 0xFF;
+        one[0] = blob[info.image + info.code_size] ^ 0xFF;
+        CHECK(fm1_dock_probe_patch(blob, n, 0, one, 1));   /* through the patch: accepted */
+        CHECK(fm1_dock_run(&sim, blob, n, 1, NULL, 0, NULL, NULL, msg, sizeof msg));
+        CHECK(fm1_dock_run_wait(&sim, 1000) == 0 && dk.runs == 1);
+    }
+
+    /* lost frames on the way: BEGIN and DATA are resent; a lost RUN is found out (fm1-dock answers
+     * HELLO when it should be running) and run again; a lost RUN answer is found in RESULT */
+    sim_reset();
+    dk.drop_every = 5;
+    dk.run_ms = 100;
+    int r = -9, tries = 0;
+    while (r != 0 && tries++ < 6) {
+        if (!fm1_dock_run(&sim, blob, n, 1, NULL, 0, NULL, NULL, msg, sizeof msg)) continue;
+        while ((r = fm1_dock_run_wait(&sim, 500)) == FM1_DOCK_WAITING) {}
+        fprintf(stderr, "  lossy run %d: %d (runs %d)\n", tries, r, dk.runs);
+        CHECK(r == 0 || r == FM1_DOCK_LOST);
+    }
+    CHECK(r == 0 && dk.runs >= 1);
+    sim_reset();
+    dk.run_ms = 100;
+    dk.lose_commit_answer = true;         /* (the RUN answer, here) */
+    CHECK(fm1_dock_run(&sim, blob, n, 5, NULL, 0, NULL, NULL, msg, sizeof msg));
+    while ((r = fm1_dock_run_wait(&sim, 500)) == FM1_DOCK_WAITING) {}
+    CHECK(r == 0 && dk.runs == 1);
+    sim_reset();
+    dk.running = false;
+    CHECK(!fm1_dock_run(&sim, blob, n, 1, NULL, 0, NULL, NULL, msg, sizeof msg));
+}
+
 int main(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
         size_t n;
         uint8_t *b = load(argv[i], &n);
         frames_line(argv[i], b, n);
-        if (i == argc - 1) {
+        fm1_dock_info_t info;
+        if (fm1_dock_module_info(b, n, &info) && (info.flags & FM1_DOCK_F_PROBE)) {
+            fflush(stdout);
+            fprintf(stderr, "probe %s:\n", argv[i]);
+            test_probe(b, n);
+        } else if (i == argc - 1) {
             fflush(stdout);
             fprintf(stderr, "deploys with %s:\n", argv[i]);
             test_deploys(b, n);
