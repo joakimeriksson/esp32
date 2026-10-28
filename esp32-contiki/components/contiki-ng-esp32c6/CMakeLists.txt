@@ -3,7 +3,14 @@ set(CONTIKI_BASE ${CMAKE_CURRENT_LIST_DIR}/contiki-ng)
 set(PORT_ARCH    ${CMAKE_CURRENT_LIST_DIR}/arch)
 set(PORT_PLAT    ${CMAKE_CURRENT_LIST_DIR}/platform)
 set(PORT_PROJ    ${CMAKE_CURRENT_LIST_DIR}/project)
-set(CONTIKI_APP  ${CONTIKI_BASE}/examples/rpl-udp/udp-client.c)
+# App selection: -DCONTIKI_NULLNET=ON builds the cross-level nullnet probe
+# (apps/nullnet-xlevel.c, no IPv6/RPL) instead of the rpl-udp client.
+option(CONTIKI_NULLNET "Build the nullnet cross-level probe instead of rpl-udp" OFF)
+if(CONTIKI_NULLNET)
+  set(CONTIKI_APP  ${CMAKE_CURRENT_LIST_DIR}/../../apps/nullnet-xlevel.c)
+else()
+  set(CONTIKI_APP  ${CONTIKI_BASE}/examples/rpl-udp/udp-client.c)
+endif()
 
 # ---- 1. pick *generic* Contiki sources (skip other platforms) ----
 file(GLOB_RECURSE CONTIKI_CORE
@@ -33,6 +40,13 @@ list(FILTER CONTIKI_CORE EXCLUDE REGEX "/os/services/rpl-border-router/")
 list(FILTER CONTIKI_CORE EXCLUDE REGEX "/os/services/simple-energest/")
 # keep Lite, drop Classic
 list(FILTER CONTIKI_CORE EXCLUDE REGEX "/os/net/routing/rpl-classic/")
+if(CONTIKI_NULLNET)
+  # no IPv6 stack at all: drop uIP, 6LoWPAN, routing, IP services
+  list(FILTER CONTIKI_CORE EXCLUDE REGEX "/os/net/ipv6/")
+  list(FILTER CONTIKI_CORE EXCLUDE REGEX "/os/net/routing/rpl-lite/")   # keep nullrouting
+  list(FILTER CONTIKI_CORE EXCLUDE REGEX "/os/net/app-layer/")
+  list(FILTER CONTIKI_CORE EXCLUDE REGEX "/os/services/")
+endif()
 
 # ---- 2. add your ESP32-C6 specific sources ----
 file(GLOB PORT_SRC
@@ -97,3 +111,7 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=format-truncation)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE NDEBUG)
+
+if(CONTIKI_NULLNET)
+  target_compile_definitions(${COMPONENT_LIB} PUBLIC CONTIKI_APP_NULLNET=1)
+endif()

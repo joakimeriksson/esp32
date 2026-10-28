@@ -6,7 +6,9 @@
 /* project-conf.h */
 #define COAP_CONF_WITH_MBEDTLS   0
 #define CSPRNG_CONF_ENABLED      0
+#ifndef CONTIKI_APP_NULLNET
 #define NETSTACK_CONF_WITH_IPV6  1
+#endif
 #define NETSTACK_CONF_WITH_UDP   1
 
 
