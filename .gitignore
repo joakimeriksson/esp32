@@ -1,0 +1,4 @@
+# Wi-Fi credentials for the T-Display price display: copy tdisplay-prices/config.example.json to config.json
+tdisplay-prices/config.json
+# esp32-contiki moved to its own repository (contiki-ng-esp32); a local working copy may remain on disk
+esp32-contiki/
