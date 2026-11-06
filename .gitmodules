@@ -1,0 +1,3 @@
+[submodule "components/contiki-ng"]
+	path = esp32-contiki/components/contiki-ng-esp32c6/contiki-ng
+	url = https://github.com/contiki-ng/contiki-ng.git
