@@ -24,13 +24,15 @@ static int npoly(const sc_synth_t *s)
 void sc_reprep(sc_synth_t *s)
 {
     for (int k = 0; k < 2; k++) sc_prep(&s->layer[k].prep, &s->patch.layer[k], &s->perf);
+#ifndef SC_HOST_REVERB
     sc_reverb_prep(&s->rev, &s->patch.fx.reverb);
+#endif
 }
 
 void sc_init(sc_synth_t *s, const sc_patch_t *patch)
 {
-    uint8_t *b = (uint8_t *)s;
-    for (uint32_t i = 0; i < sizeof *s; i++) b[i] = 0;
+    uint32_t *w = (uint32_t *)s;                /* (by words: a patch load runs this in the audio interrupt, ~150 KB) */
+    for (uint32_t i = 0; i < sizeof *s / 4; i++) w[i] = 0;
     s->patch = *patch;
     sc_perf_default(&s->perf);
     for (int k = 0; k < 2; k++) {
@@ -68,6 +70,11 @@ static void layer_on(sc_synth_t *s, int k, int note, int32_t vel)
     const sc_layer_t *L = &s->patch.layer[k];
     int nv = npoly(s);
     uint32_t now = ++s->clock;
+    /* The layer's one LFO: the firmware strobes the LFO board's SYNC line, which restarts the oscillator
+     * and its delay ramp, when a key goes down while no other key of the layer is held, and only if the
+     * DELAY knob is off its stop ($F5FD-$F61B, the flags in $019F). As synth.ts's layerNoteOn. */
+    if (ls->nheld == 0 && L->lfo[0].delay > 0)
+        for (int i = 0; i < SC_VOICES; i++) sc_voice_lfo_sync(&ls->v[i], &ls->prep);
     if (ls->nheld < sizeof ls->held) ls->held[ls->nheld++] = (uint8_t)note;
 
     switch (L->key_assign) {
@@ -212,43 +219,54 @@ static void drain(sc_synth_t *s)
 
 /* ---- the chain ------------------------------------------------------------------------------ */
 
-/* StereoChorus: two taps around 12 ms, swept by one sine in opposite phase; dry 1 - mix/2, wet mix.
- * Its mode presets: (rate Hz, depth s) = (0.30, 0.002), (0.55, 0.004), (0.90, 0.007), each scaled
- * by (0.5 + the patch's rate / depth). */
+/* The Synthex's chorus as fx/chorus.ts models it from the schematic (board 5860): two bucket-brigade
+ * lines around 4 ms, each swept by a triangle LFO, line 1 at 0.49 Hz, line 2 at 0.60 Hz or, in mode 3,
+ * 4.6 Hz with 0.59 of line 1's sweep; the modes set which lines and how much. Dry at unity; the right
+ * channel's lines swept in opposite phase. The patch's rate / depth / mix bias each line (0.5 neutral). */
+typedef struct { int32_t rate, depth, wet; } chorus_line_t;      /* Hz Q16, seconds Q16, gain Q16 */
+static const chorus_line_t CHORUS_LINES[3][2] = {
+    { { SC_Q16(0.49), SC_Q16(0.0016), SC_Q16(0.30) }, { 0, 0, 0 } },
+    { { SC_Q16(0.49), SC_Q16(0.0016), SC_Q16(0.22) }, { SC_Q16(0.60), SC_Q16(0.0012), SC_Q16(0.22) } },
+    { { SC_Q16(0.49), SC_Q16(0.0016), SC_Q16(0.25) }, { SC_Q16(4.60), SC_Q16(0.0012), SC_Q16(0.25) } },
+};
+#define CHORUS_BASE SC_Q16(0.004 * SC_FS)       /* samples, Q16 */
 static void chorus(sc_chorus_t *c, const sc_chorus_p_t *p, const int32_t *in, int32_t *l, int32_t *r, uint32_t n)
 {
-    static const int32_t RATE[3] = { SC_Q16(0.30), SC_Q16(0.55), SC_Q16(0.90) };
-    static const int32_t DEPTH[3] = { SC_Q16(0.002), SC_Q16(0.004), SC_Q16(0.007) };
     if (!p->on) {
         for (uint32_t i = 0; i < n; i++) l[i] = r[i] = in[i];
         return;
     }
     int m = p->mode < 1 ? 0 : p->mode > 3 ? 2 : p->mode - 1;
-    int32_t rate = sc_mul(RATE[m], SC_ONE16 / 2 + p->rate, 16);
-    uint32_t inc = (uint32_t)(((uint64_t)(uint32_t)rate * 398915783u) >> 28);
-    int32_t depth = sc_mul(DEPTH[m], SC_ONE16 / 2 + p->depth, 16) * SC_FS;          /* samples, Q16 */
-    const int32_t base = SC_Q16(0.012 * SC_FS);
-    int32_t dry = SC_ONE16 - p->mix / 2, wet = p->mix;
-
+    uint32_t inc[2]; int32_t depth[2], wet[2];
+    for (int k = 0; k < 2; k++) {
+        const chorus_line_t *ln = &CHORUS_LINES[m][k];
+        int32_t rate = sc_mul(ln->rate, SC_ONE16 / 2 + p->rate, 16);
+        inc[k] = (uint32_t)(((uint64_t)(uint32_t)rate * 398915783u) >> 28);   /* Q16 Hz -> Q32 phase per sample */
+        depth[k] = sc_mul(ln->depth, SC_ONE16 / 2 + p->depth, 16) * SC_FS;      /* samples, Q16 */
+        wet[k] = sc_mul(ln->wet, p->mix * 2, 16);
+    }
     for (uint32_t i = 0; i < n; i++) {
         int32_t x = in[i];
         c->buf[c->w] = x;
-        uint32_t si = c->ph >> 22, fr = (c->ph >> 6) & 0xFFFFu;
-        int32_t sn = SC_SINE[si] * 2 + (int32_t)(((int64_t)(SC_SINE[si + 1] - SC_SINE[si]) * fr) >> 15);  /* Q16 */
-        c->ph += inc;
-        int32_t dm = sc_mul(depth, sn, 16);
-        int32_t tap[2];
+        int32_t yl = x, yr = x;
         for (int k = 0; k < 2; k++) {
-            int32_t d = base + (k ? -dm : dm);                         /* Q16 samples */
-            uint32_t di = (uint32_t)d >> 16, f = (uint32_t)d & 0xFFFFu;
-            int32_t a = c->buf[(c->w - di) & (SC_CHORUS_LEN - 1)];
-            int32_t b = c->buf[(c->w - di - 1) & (SC_CHORUS_LEN - 1)];
-            tap[k] = a + (int32_t)(((int64_t)(b - a) * f) >> 16);
+            if (!wet[k]) continue;
+            uint32_t ph = c->ph[k];
+            uint32_t dd = ph < 0x80000000u ? 0x80000000u - ph : ph - 0x80000000u;
+            int32_t tri = SC_ONE16 - (int32_t)(dd >> 14);                /* 1 - 4 |phase - 1/2|, Q16 */
+            c->ph[k] = ph + inc[k];
+            int32_t dm = sc_mul(depth[k], tri, 16);
+            for (int ch = 0; ch < 2; ch++) {
+                int32_t d = CHORUS_BASE + (ch ? -dm : dm);                   /* Q16 samples */
+                uint32_t di = (uint32_t)d >> 16, f = (uint32_t)d & 0xFFFFu;
+                int32_t a = c->buf[(c->w - di) & (SC_CHORUS_LEN - 1)];
+                int32_t b = c->buf[(c->w - di - 1) & (SC_CHORUS_LEN - 1)];
+                int32_t tap = a + (int32_t)(((int64_t)(b - a) * f) >> 16);
+                if (ch) yr += sc_mul(tap, wet[k], 16); else yl += sc_mul(tap, wet[k], 16);
+            }
         }
         c->w = (c->w + 1) & (SC_CHORUS_LEN - 1);
-        int32_t d0 = sc_mul(x, dry, 16);
-        l[i] = d0 + sc_mul(tap[0], wet, 16);
-        r[i] = d0 + sc_mul(tap[1], wet, 16);
+        l[i] = yl; r[i] = yr;
     }
 }
 
@@ -448,26 +466,59 @@ static void limit(sc_limiter_t *lm, int32_t *L, int32_t *R, uint32_t n)
     }
 }
 
-void sc_render(sc_synth_t *s, int32_t *out, uint32_t n)
+/* ---- the render: whole (sc_render), or its voices split between two cores ------------------- */
+
+static int nlayers(const sc_synth_t *s) { return s->patch.voice_mode == SC_VM_SINGLE ? 1 : 2; }
+
+void sc_render_begin(sc_synth_t *s) { drain(s); }
+
+uint32_t sc_render_split(const sc_synth_t *s, uint32_t *other)
+{
+    uint32_t m[2] = { 0, 0 }, t = 0;
+    for (int k = 0; k < nlayers(s); k++)
+        for (int i = 0; i < SC_VOICES; i++)
+            if (!sc_voice_idle(&s->layer[k].v[i])) {
+                m[t] |= 1u << (k * SC_VOICES + i);
+                t ^= 1u;
+            }
+    *other = m[1];
+    return m[0];
+}
+
+void sc_render_voices(sc_synth_t *s, int32_t (*bus)[256], uint32_t mask, unsigned lane, uint32_t n)
+{
+    for (int k = 0; k < nlayers(s); k++) {
+        sc_layer_state_t *ls = &s->layer[k];
+        for (uint32_t i = 0; i < n; i++) bus[k][i] = 0;
+        for (int i = 0; i < SC_VOICES; i++)
+            if ((mask >> (k * SC_VOICES + i) & 1u) && !sc_voice_idle(&ls->v[i]))
+                sc_voice_render_lane(&ls->v[i], &ls->prep, bus[k], n, lane);
+    }
+}
+
+void sc_render_end(sc_synth_t *s, const int32_t (*more)[256], int32_t *out, uint32_t n)
 {
     static int32_t L[256], R[256], l2[256], r2[256];
-    if (n > 256) n = 256;
-    drain(s);
     int nv = npoly(s);
     int32_t vol = sc_mul(s->patch.volume, INV_SQRT[nv], 16);        /* the layer mixer and the master */
-    int layers = s->patch.voice_mode == SC_VM_SINGLE ? 1 : 2;
+    int layers = nlayers(s);
 
     for (uint32_t i = 0; i < n; i++) L[i] = R[i] = 0;
     for (int k = 0; k < layers; k++) {
         sc_layer_state_t *ls = &s->layer[k];
         int32_t *bus = s->bus[k];
-        for (uint32_t i = 0; i < n; i++) bus[i] = 0;
-        for (int i = 0; i < SC_VOICES; i++)
-            if (!sc_voice_idle(&ls->v[i])) sc_voice_render(&ls->v[i], &ls->prep, bus, n);
+        for (int i = 0; i < SC_VOICES; i++) {   /* the voices that were not rendered: their LFOs run on */
+            if (!ls->v[i].stepped) sc_voice_advance(&ls->v[i], &ls->prep, n);
+            ls->v[i].stepped = 0;
+        }
+        if (more)                               /* the other core's voices (integer sums: the same in any order) */
+            for (uint32_t i = 0; i < n; i++) bus[i] += more[k][i];
         chorus(&ls->chorus, &s->patch.fx.chorus, bus, l2, r2, n);
         for (uint32_t i = 0; i < n; i++) { L[i] += l2[i]; R[i] += r2[i]; }
     }
+#ifndef SC_HOST_REVERB
     if (s->rev.on) sc_reverb_run(&s->rev, L, R, n);
+#endif
     /* master volume, the limiter (as the patch's master.limiter), Q15 with a hard ceiling */
     for (uint32_t i = 0; i < n; i++) { L[i] = sc_mul(L[i], vol, 16); R[i] = sc_mul(R[i], vol, 16); }
     if (s->patch.limiter) limit(&s->lim, L, R, n);
@@ -476,4 +527,12 @@ void sc_render(sc_synth_t *s, int32_t *out, uint32_t n)
         out[2 * i]     += sc_clamp(L[i], -32767, 32767);
         out[2 * i + 1] += sc_clamp(R[i], -32767, 32767);
     }
+}
+
+void sc_render(sc_synth_t *s, int32_t *out, uint32_t n)
+{
+    if (n > 256) n = 256;
+    sc_render_begin(s);
+    sc_render_voices(s, s->bus, ~0u, 0, n);
+    sc_render_end(s, 0, out, n);
 }
