@@ -14,6 +14,9 @@
 #ifndef SC_VOICES
 #define SC_VOICES 8                             /* per layer (patch.master.polyphony, capped) */
 #endif
+#if SC_VOICES > 16
+#error "sc_render_split's masks: 2 x SC_VOICES bits"
+#endif
 #define SC_CHORUS_LEN 1024                      /* samples: 23 ms, the chorus reaches ~20 */
 
 enum { SC_EV_NOTE_ON = 1, SC_EV_NOTE_OFF, SC_EV_ALL_OFF, SC_EV_BEND, SC_EV_PATCH,
@@ -23,11 +26,13 @@ typedef struct { uint8_t type, note; int32_t val; } sc_event_t;
 
 typedef struct {
     int32_t buf[SC_CHORUS_LEN];                 /* Q20: a loud chord's voices sum past 1.0 (Brass I: ~1.8) */
-    uint32_t w, ph;
+    uint32_t w, ph[2];                          /* the two lines' triangle LFO phases */
 } sc_chorus_t;
 
 /* The reverb: eight delay lines in a Hadamard feedback loop, standing in for the app's convolution
- * with a noise impulse (fx/reverb.ts); sc_synth.c says what is matched. 64 KB. */
+ * with a noise impulse (fx/reverb.ts); sc_synth.c says what is matched. 64 KB. Built with
+ * -DSC_HOST_REVERB, the synth omits its 64 KB reverb state and render pass; the host renders the
+ * patch's fx.reverb after the module (fm1-dock's hb_fx.c). The type and functions remain for tools. */
 #define SC_REV_LINES 8
 #define SC_REV_LEN 2048                         /* each line's ring (power of two); the longest is 1949 */
 typedef struct {
@@ -66,7 +71,9 @@ typedef struct {
     volatile uint32_t q_w, q_r;
     int32_t bus[2][256];                        /* scratch: each layer's voices, mono Q20 */
     sc_limiter_t lim;
+#ifndef SC_HOST_REVERB
     sc_reverb_t rev;                            /* after both layers' choruses: one for the two */
+#endif
 } sc_synth_t;
 
 void sc_init(sc_synth_t *s, const sc_patch_t *patch);
@@ -75,6 +82,15 @@ void sc_perf_default(sc_perf_t *p);
 int  sc_post(sc_synth_t *s, uint8_t type, uint8_t note, int32_t val);
 /* the audio interrupt: add n (<= 256) stereo frames (L R, Q15) into out */
 void sc_render(sc_synth_t *s, int32_t *out, uint32_t n);
+/* sc_render in three parts, for a render whose voices are split between two cores (fm1-dock's
+ * module): sc_render_begin (the events), then sc_render_voices for each part of sc_render_split's
+ * (the sounding voices, alternately: bit k * SC_VOICES + i is layer k's voice i) at the same time,
+ * each into its own bus and on its own lane (SC_LANES, sc_voice.h), then sc_render_end with the
+ * other part's bus (more; s->bus holds the first). The same samples as sc_render, n <= 256. */
+void sc_render_begin(sc_synth_t *s);
+uint32_t sc_render_split(const sc_synth_t *s, uint32_t *other);
+void sc_render_voices(sc_synth_t *s, int32_t (*bus)[256], uint32_t mask, unsigned lane, uint32_t n);
+void sc_render_end(sc_synth_t *s, const int32_t (*more)[256], int32_t *out, uint32_t n);
 /* the same events, applied at once (only from the context that calls sc_render) */
 void sc_note_on(sc_synth_t *s, int note, int32_t vel_q16);
 void sc_note_off(sc_synth_t *s, int note);
