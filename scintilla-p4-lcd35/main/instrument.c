@@ -20,7 +20,7 @@ enum { P_OSC, P_MIX, P_FILTER, P_ENV, P_LFO, P_FX, P_N };
 static const char *const PAGE_NAMES[P_N] = { "OSC", "MIX", "FILTER", "ENV", "LFO", "FX" };
 static const char *const WAVES[] = { "Triangle", "Sawtooth", "Square", "Sine", "Noise" };
 static const char *const FILTERS[] = { "LP 24", "LP 12", "BP 12", "BP 6", "HP 12" };
-static const char *const LFOS[] = { "Triangle", "Square", "S & H", "Random", "Ramp", "Square +" };
+static const char *const LFOS[] = { "Triangle", "Square", "S & H", "Random", "Ramp", "Ramp -", "Square +" };
 static const char *const REVERBS[] = { "Plate", "Room", "Hall", "Galactic" };
 
 typedef struct {
@@ -66,8 +66,8 @@ static const param_t PARAMS[] = {
     { P_ENV, "AMP SUSTAIN", LIN, L(env_a.s), 0, 1, "", NULL },
     { P_ENV, "FILTER RELEASE", EXP, L(env_f.r), 0.001f, 5, " s", NULL },
     { P_ENV, "AMP RELEASE", EXP, L(env_a.r), 0.001f, 5, " s", NULL },
-    { P_LFO, "LFO 1 SHAPE", ENUM, L(lfo[0].shape), 0, 5, "", LFOS },
-    { P_LFO, "LFO 2 SHAPE", ENUM, L(lfo[1].shape), 0, 5, "", LFOS },
+    { P_LFO, "LFO 1 SHAPE", ENUM, L(lfo[0].shape), 0, 6, "", LFOS },
+    { P_LFO, "LFO 2 SHAPE", ENUM, L(lfo[1].shape), 0, 6, "", LFOS },
     { P_LFO, "LFO 1 FREQUENCY", EXP, L(lfo[0].rate), 0.05f, 20, " Hz", NULL },
     { P_LFO, "LFO 2 FREQUENCY", EXP, L(lfo[1].rate), 0.05f, 20, " Hz", NULL },
     { P_LFO, "LFO 1 DELAY", LIN, L(lfo[0].delay), 0, 5, " s", NULL },
@@ -165,7 +165,7 @@ static void step_pressed(lv_event_t *e)
 
 static void refresh(void)
 {
-    lv_label_set_text_fmt(name_label, "%02d %s", SC_PRESET_ADDR[audio_preset()], SC_PRESETS[audio_preset()].name);
+    lv_label_set_text_fmt(name_label, "%02d %s", SC_PRESET_ADDR[audio_preset()], sc_preset_name(audio_preset()));
     lv_label_set_text(layer_label, layer ? "LOWER" : "UPPER");
     for (int i = 0; i < N_PARAMS; i++) show_value(i);
 }

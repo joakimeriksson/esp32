@@ -89,7 +89,7 @@ static void keyboard_event(lv_event_t *e)
 static void show_preset(void)
 {
     lv_label_set_text_fmt(num_label, "%02d", SC_PRESET_ADDR[preset]);
-    lv_label_set_text(name_label, SC_PRESETS[preset].name);
+    lv_label_set_text(name_label, sc_preset_name(preset));
 }
 
 static void preset_step(lv_event_t *e)
@@ -132,7 +132,7 @@ static void picker_paint(void)
     for (int i = 0; i < 4; i++) theme_button_lit(group_btn[i], i == pick_group);
     for (int s = 0; s < 10; s++) {
         int k = picker_index(s);
-        lv_label_set_text_fmt(lv_obj_get_child(pick_btn[s], 0), "%d  %s", SC_PRESET_ADDR[k], SC_PRESETS[k].name);
+        lv_label_set_text_fmt(lv_obj_get_child(pick_btn[s], 0), "%d  %s", SC_PRESET_ADDR[k], sc_preset_name(k));
         theme_button_lit(pick_btn[s], k == preset);
     }
 }
