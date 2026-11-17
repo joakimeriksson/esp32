@@ -8,7 +8,7 @@
 #define SC_BLOCK 128            /* frames per sc_render: the host renderer's run length (CLAUDE.md upstream) */
 
 extern sc_synth_t g_synth;      /* the one instrument; sc_post() from one other task only */
-/* start the render loop on core 1, writing into the codec; preset is an index into SC_PRESETS */
+/* start the render loop on core 1, writing into the codec; preset is an index into the factory bank (sc_presets.h) */
 void audio_start(esp_codec_dev_handle_t codec, int preset);
 /* ask the audio task to switch preset between two blocks */
 void audio_request_preset(int preset);

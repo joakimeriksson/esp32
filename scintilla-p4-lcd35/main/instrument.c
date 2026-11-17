@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* The instrument page: the patch that is playing, edited live, in six tabs that follow synthex-web's
  * panel (OSC, MIX, FILTER, ENV, LFO, FX), each up to eight controls in two columns. Sliders for
- * continuous values, with synthex-web's knob ranges; a button that steps through the choices for
- * the rest. Layer fields go to the upper or the lower layer (the UPPER/LOWER button); the effects
+ * continuous values, with the ranges of scintilla-fm1's pages (the Synthex's own, which the ROM
+ * bank reaches: ENV to +-3.1, detune to +-1250 cents, envelope stages to 15 s); a button that
+ * steps through the choices for the rest. Layer fields go to the upper or the lower layer (the UPPER/LOWER button); the effects
  * and the master volume belong to the whole patch. Every change goes to the audio task as a field
  * edit (events_param); the engine applies it to the notes that sound. */
 #include <math.h>
@@ -20,7 +21,7 @@ enum { P_OSC, P_MIX, P_FILTER, P_ENV, P_LFO, P_FX, P_N };
 static const char *const PAGE_NAMES[P_N] = { "OSC", "MIX", "FILTER", "ENV", "LFO", "FX" };
 static const char *const WAVES[] = { "Triangle", "Sawtooth", "Square", "Sine", "Noise" };
 static const char *const FILTERS[] = { "LP 24", "LP 12", "BP 12", "BP 6", "HP 12" };
-static const char *const LFOS[] = { "Triangle", "Square", "S & H", "Random", "Ramp", "Square +" };
+static const char *const LFOS[] = { "Triangle", "Square", "S & H", "Random", "Ramp", "Ramp -", "Square +" };
 static const char *const REVERBS[] = { "Plate", "Room", "Hall", "Galactic" };
 
 typedef struct {
@@ -42,7 +43,7 @@ static const param_t PARAMS[] = {
     { P_OSC, "OSC 1 OCTAVE", INT, L(o1_oct), -2, 2, "", NULL },
     { P_OSC, "OSC 2 OCTAVE", INT, L(o2_oct), -2, 2, "", NULL },
     { P_OSC, "OSC 1 PULSE WIDTH", LIN, L(o1_pwm), 0.05f, 0.95f, "", NULL },
-    { P_OSC, "OSC 2 DETUNE", LIN, L(o2_detune), -50, 50, " c", NULL },
+    { P_OSC, "OSC 2 DETUNE", LIN, L(o2_detune), -1250, 1250, " c", NULL },
     { P_OSC, "OSC 2 PULSE WIDTH", LIN, L(o2_pwm), 0.05f, 0.95f, "", NULL },
     { P_OSC, "OSC 2 SYNC", BOOL, L(o2_sync), 0, 1, "", NULL },
     { P_MIX, "OSC 1 VOLUME", LIN, L(mix_o1), 0, 1, "", NULL },
@@ -51,27 +52,27 @@ static const param_t PARAMS[] = {
     { P_MIX, "PINK NOISE", BOOL, L(noise_pink), 0, 1, "", NULL },
     { P_MIX, "RING MOD", BOOL, L(ring), 0, 1, "", NULL },
     { P_MIX, "CROSS MOD", LIN, L(cross), 0, 1, "", NULL },
-    { P_MIX, "GLIDE SPEED", EXP, L(glide_time), 0.01f, 10, " s", NULL },
-    { P_MIX, "GLIDE AMOUNT", LIN, L(glide_amt), -24, 24, " st", NULL },
+    { P_MIX, "GLIDE SPEED", EXP, L(glide_time), 0.005f, 10, " s", NULL },
+    { P_MIX, "GLIDE AMOUNT", LIN, L(glide_amt), -32, 31, " st", NULL },
     { P_FILTER, "MODE", ENUM, L(flt_mode), 0, 4, "", FILTERS },
     { P_FILTER, "KEYBOARD", LIN, L(key_track), 0, 1, "", NULL },
-    { P_FILTER, "FREQUENCY", LIN, L(cutoff), 0, 1, "", NULL },
+    { P_FILTER, "FREQUENCY", LIN, L(cutoff), -0.3f, 1.5f, "", NULL },
     { P_FILTER, "RESONANCE", LIN, L(reso), 0, 1, "", NULL },
-    { P_FILTER, "ENVELOPE", LIN, L(env_amt), -1, 1, "", NULL },
-    { P_ENV, "FILTER ATTACK", EXP, L(env_f.a), 0.001f, 5, " s", NULL },
-    { P_ENV, "AMP ATTACK", EXP, L(env_a.a), 0.001f, 5, " s", NULL },
-    { P_ENV, "FILTER DECAY", EXP, L(env_f.d), 0.001f, 5, " s", NULL },
-    { P_ENV, "AMP DECAY", EXP, L(env_a.d), 0.001f, 5, " s", NULL },
+    { P_FILTER, "ENVELOPE", LIN, L(env_amt), -3.1f, 3.1f, "", NULL },
+    { P_ENV, "FILTER ATTACK", EXP, L(env_f.a), 0.001f, 15, " s", NULL },
+    { P_ENV, "AMP ATTACK", EXP, L(env_a.a), 0.001f, 15, " s", NULL },
+    { P_ENV, "FILTER DECAY", EXP, L(env_f.d), 0.001f, 15, " s", NULL },
+    { P_ENV, "AMP DECAY", EXP, L(env_a.d), 0.001f, 15, " s", NULL },
     { P_ENV, "FILTER SUSTAIN", LIN, L(env_f.s), 0, 1, "", NULL },
     { P_ENV, "AMP SUSTAIN", LIN, L(env_a.s), 0, 1, "", NULL },
-    { P_ENV, "FILTER RELEASE", EXP, L(env_f.r), 0.001f, 5, " s", NULL },
-    { P_ENV, "AMP RELEASE", EXP, L(env_a.r), 0.001f, 5, " s", NULL },
-    { P_LFO, "LFO 1 SHAPE", ENUM, L(lfo[0].shape), 0, 5, "", LFOS },
-    { P_LFO, "LFO 2 SHAPE", ENUM, L(lfo[1].shape), 0, 5, "", LFOS },
-    { P_LFO, "LFO 1 FREQUENCY", EXP, L(lfo[0].rate), 0.05f, 20, " Hz", NULL },
-    { P_LFO, "LFO 2 FREQUENCY", EXP, L(lfo[1].rate), 0.05f, 20, " Hz", NULL },
-    { P_LFO, "LFO 1 DELAY", LIN, L(lfo[0].delay), 0, 5, " s", NULL },
-    { P_LFO, "LFO 2 DELAY", LIN, L(lfo[1].delay), 0, 5, " s", NULL },
+    { P_ENV, "FILTER RELEASE", EXP, L(env_f.r), 0.001f, 15, " s", NULL },
+    { P_ENV, "AMP RELEASE", EXP, L(env_a.r), 0.001f, 15, " s", NULL },
+    { P_LFO, "LFO 1 SHAPE", ENUM, L(lfo[0].shape), 0, 6, "", LFOS },
+    { P_LFO, "LFO 2 SHAPE", ENUM, L(lfo[1].shape), 0, 6, "", LFOS },
+    { P_LFO, "LFO 1 FREQUENCY", EXP, L(lfo[0].rate), 0.05f, 30, " Hz", NULL },
+    { P_LFO, "LFO 2 FREQUENCY", EXP, L(lfo[1].rate), 0.05f, 30, " Hz", NULL },
+    { P_LFO, "LFO 1 DELAY", LIN, L(lfo[0].delay), 0, 20, " s", NULL },
+    { P_LFO, "LFO 2 DELAY", LIN, L(lfo[1].delay), 0, 20, " s", NULL },
     { P_LFO, "LFO 1 DEPTH A", LIN, L(lfo[0].depth_a), 0, 1, "", NULL },
     { P_LFO, "LFO 2 DEPTH A", LIN, L(lfo[1].depth_a), 0, 1, "", NULL },
     { P_FX, "CHORUS", BOOL, G(fx.chorus.on), 0, 1, "", NULL },
@@ -165,7 +166,7 @@ static void step_pressed(lv_event_t *e)
 
 static void refresh(void)
 {
-    lv_label_set_text_fmt(name_label, "%02d %s", SC_PRESET_ADDR[audio_preset()], SC_PRESETS[audio_preset()].name);
+    lv_label_set_text_fmt(name_label, "%02d %s", SC_PRESET_ADDR[audio_preset()], sc_preset_name(audio_preset()));
     lv_label_set_text(layer_label, layer ? "LOWER" : "UPPER");
     for (int i = 0; i < N_PARAMS; i++) show_value(i);
 }

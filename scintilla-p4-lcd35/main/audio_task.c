@@ -65,10 +65,10 @@ static void audio_task(void *arg)
         if (edited) { sc_reprep(&g_synth); edited = false; }   /* the sounding notes take the change */
         if (p >= 0 && p < SC_N_PRESETS) {
             sc_all_off(&g_synth);
-            g_synth.patch = SC_PRESETS[p];
+            sc_preset_load((unsigned)p, &g_synth.patch);   /* decoded from its 25-byte record */
             sc_reprep(&g_synth);
             atomic_store(&s_preset, p);
-            printf("audio: preset %d %s\n", p, SC_PRESETS[p].name);
+            printf("audio: preset %d %s\n", p, g_synth.patch.name);
         }
         memset(mix, 0, sizeof mix);
         int64_t t0 = esp_timer_get_time();
@@ -88,9 +88,11 @@ static void audio_task(void *arg)
 
 void audio_start(esp_codec_dev_handle_t codec, int preset)
 {
+    static sc_patch_t first;                    /* sc_init clears the synth, then copies the patch in */
     s_codec = codec;
-    sc_init(&g_synth, &SC_PRESETS[preset]);
+    sc_preset_load((unsigned)preset, &first);
+    sc_init(&g_synth, &first);
     atomic_store(&s_preset, preset);
-    printf("audio: preset %d %s, %u bytes of engine state\n", preset, SC_PRESETS[preset].name, (unsigned)sizeof g_synth);
+    printf("audio: preset %d %s, %u bytes of engine state\n", preset, g_synth.patch.name, (unsigned)sizeof g_synth);
     xTaskCreatePinnedToCore(audio_task, "audio", 12288, NULL, 20, NULL, 1);
 }
